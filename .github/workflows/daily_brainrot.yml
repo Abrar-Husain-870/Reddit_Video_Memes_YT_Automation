@@ -74,7 +74,9 @@ jobs:
           YOUTUBE_PRIVACY: ${{ github.event.inputs.privacy || 'public' }}
         run: |
           STYLE="${{ github.event.inputs.style || 'random' }}"
-          python run_pipeline.py --style "$STYLE"
+          # Skip download on CI — yt-dlp gets bot-blocked on GitHub runners.
+          # Relies on cached clips or fallback clip generation.
+          python run_pipeline.py --skip-download --style "$STYLE"
 
       - name: Save clip cache
         uses: actions/cache/save@v4
