@@ -104,9 +104,16 @@ def main() -> None:
         else:
             print(f"\n📥 Step 1/6: Skipping download")
 
-        # ── Step 2: Process ──
-        print(f"\n✂️  Step 2/6: Processing raw videos into short clips…")
-        clips = process_all_raw()
+        # ── Step 2: Process or use existing clips ──
+        if args.skip_download:
+            # On CI with --skip-download: use pre-committed clips directly
+            print(f"\n✂️  Step 2/6: Using pre-committed clips from data/clips/…")
+            clips = sorted(config.CLIPS_DIR.glob("*.mp4"))
+            if clips:
+                print(f"   Found {len(clips)} committed clip(s)")
+        if not clips:
+            print(f"\n✂️  Step 2/6: Processing raw videos into short clips…")
+            clips = process_all_raw()
         if not clips:
             print("⚠ No clips available from downloads.")
             print("   Generating a fallback test clip (solid color + text)…")
