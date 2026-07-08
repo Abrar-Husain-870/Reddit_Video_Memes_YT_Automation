@@ -249,3 +249,43 @@ Emphasis: ['FIVE YEARS OF PAIN', 'TRUTH', 'INTIMACY']
 2026-07-08 22:20:18,471 [INFO] RedditShortsPipeline: ▶ STARTING STAGE: YouTube Upload
 2026-07-08 22:20:18,472 [INFO] RedditShortsPipeline: ✔ FINISHED STAGE: YouTube Upload in 0.00s | Metadata: {'status': 'skipped'}
 2026-07-08 22:20:18,473 [INFO] RedditShortsPipeline: Cleaning up temporary render files...
+2026-07-08 23:24:16,519 [INFO] RedditShortsPipeline: ▶ STARTING STAGE: Scheduler Check
+2026-07-08 23:24:16,522 [INFO] RedditShortsPipeline: Uploads in last 24 hours: 0 (Limit: 4)
+2026-07-08 23:24:16,523 [INFO] RedditShortsPipeline: Scheduler Check: Forced run requested
+2026-07-08 23:24:16,523 [INFO] RedditShortsPipeline: ✔ FINISHED STAGE: Scheduler Check in 0.00s | Metadata: {'should_run': True}
+2026-07-08 23:24:16,523 [INFO] RedditShortsPipeline: ▶ STARTING STAGE: Reddit Ingestion
+2026-07-08 23:24:16,525 [INFO] RedditShortsPipeline: Searching subreddits for posts: r/MildlyInteresting
+2026-07-08 23:24:16,525 [INFO] RedditShortsPipeline: Fetching posts from anonymous Reddit feed: https://www.reddit.com/r/MildlyInteresting/top.json
+2026-07-08 23:24:16,966 [WARNING] RedditShortsPipeline: Public Reddit API fetch failed for r/MildlyInteresting: 403 Client Error: Blocked for url: https://www.reddit.com/r/MildlyInteresting/top.json?t=week
+2026-07-08 23:24:16,988 [INFO] RedditShortsPipeline: Fetching posts from anonymous RSS feed: https://www.reddit.com/r/MildlyInteresting/.rss
+2026-07-08 23:24:18,068 [INFO] RedditShortsPipeline: 🎉 Selected Reddit Post: r/MildlyInteresting - ID: 1uqpjxb - Title: The sudoku in my newspaper today started with a G ...
+2026-07-08 23:24:18,069 [INFO] RedditShortsPipeline: ✔ FINISHED STAGE: Reddit Ingestion in 1.55s | Metadata: {'id': '1uqpjxb', 'subreddit': 'MildlyInteresting', 'title': 'The sudoku in my newspaper today started...'}
+2026-07-08 23:24:18,069 [INFO] RedditShortsPipeline: ▶ STARTING STAGE: Script Generation
+2026-07-08 23:24:20,362 [INFO] RedditShortsPipeline: Sending request to Groq model: llama-3.1-8b-instant
+2026-07-08 23:24:21,325 [INFO] httpx: HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+2026-07-08 23:24:21,366 [INFO] RedditShortsPipeline: ✔ FINISHED STAGE: Script Generation in 3.30s | Metadata: {'title': 'SUDOKU SHOCKER', 'word_count': 96, 'emphasis_count': 6}
+2026-07-08 23:24:21,367 [INFO] RedditShortsPipeline: Generated Script Text:
+"Imagine staring at your morning newspaper, just about to start the day with a nice cup of coffee, when suddenly, you spot something that will blow your mind. A GUESS WHAT?! The sudoku puzzle staring back at you is starting with a G shape, the perfect symmetry is uncanny. This isn't just any ordinary sudoku, it's a MASTERPIECE waiting to be solved. A puzzle so UNIQUE, so EXQUISITE, it's hard to believe it's just a simple game of numbers. Some might call it a COINCIDENCE, but for the sudoku enthusiasts out there, this is pure GENIUS."
+Emphasis: ['GUESS WHAT', 'MASTERPIECE', 'UNIQUE', 'EXQUISITE', 'COINCIDENCE', 'GENIUS']
+2026-07-08 23:24:21,367 [INFO] RedditShortsPipeline: ▶ STARTING STAGE: Background Selection
+2026-07-08 23:24:21,371 [INFO] RedditShortsPipeline: Selected background clip: 'Xj5jNjhiXao_clip_061.mp4' (used 0 times previously)
+2026-07-08 23:24:21,372 [INFO] RedditShortsPipeline: ✔ FINISHED STAGE: Background Selection in 0.00s | Metadata: {'filename': 'Xj5jNjhiXao_clip_061.mp4'}
+2026-07-08 23:24:21,372 [INFO] RedditShortsPipeline: ▶ STARTING STAGE: Overlay Generation
+2026-07-08 23:24:21,514 [INFO] RedditShortsPipeline: Reddit card overlay generated at C:\Users\husai\Desktop\Reddit YT Shorts\Brain_Bot\data\output\reddit_card.png (900x284)
+2026-07-08 23:24:21,516 [INFO] RedditShortsPipeline: ✔ FINISHED STAGE: Overlay Generation in 0.14s | Metadata: {'path': 'C:\\Users\\husai\\Desktop\\Reddit YT Shorts\\Brain_Bot\\data\\output\\reddit_card.png'}
+2026-07-08 23:24:21,517 [INFO] RedditShortsPipeline: ▶ STARTING STAGE: Voice Synthesis
+2026-07-08 23:24:21,522 [INFO] RedditShortsPipeline: Synthesizing voiceover with Edge TTS (voice: en-US-AndrewNeural)
+2026-07-08 23:24:33,610 [INFO] RedditShortsPipeline: Generated Edge TTS voiceover: 33.74s (6 sentences)
+2026-07-08 23:24:33,610 [INFO] RedditShortsPipeline: ✔ FINISHED STAGE: Voice Synthesis in 12.09s | Metadata: {'duration_s': 33.744, 'sentences': 6}
+2026-07-08 23:24:33,611 [INFO] RedditShortsPipeline: ▶ STARTING STAGE: Video Rendering
+2026-07-08 23:24:33,697 [INFO] RedditShortsPipeline: Rendering pipeline: Background 'Xj5jNjhiXao_clip_061.mp4' | Audio duration: 33.74s
+2026-07-08 23:24:33,702 [INFO] RedditShortsPipeline: Running FFmpeg render (60 FPS, presets: medium, output: final_short.mp4)
+2026-07-08 23:27:21,042 [INFO] RedditShortsPipeline: ✔ Short rendered successfully: final_short.mp4 (31.10MB, 60fps)
+2026-07-08 23:27:21,043 [INFO] RedditShortsPipeline: ✔ FINISHED STAGE: Video Rendering in 167.43s | Metadata: {'output_video': 'C:\\Users\\husai\\Desktop\\Reddit YT Shorts\\Brain_Bot\\data\\output\\final_short.mp4'}
+2026-07-08 23:27:21,044 [INFO] RedditShortsPipeline: ▶ STARTING STAGE: Database Update
+2026-07-08 23:27:21,047 [INFO] RedditShortsPipeline: Saved Reddit ID 1uqpjxb to history database
+2026-07-08 23:27:21,051 [INFO] RedditShortsPipeline: Updated background usage: Xj5jNjhiXao_clip_061.mp4 has been used 1 time(s)
+2026-07-08 23:27:21,051 [INFO] RedditShortsPipeline: ✔ FINISHED STAGE: Database Update in 0.01s
+2026-07-08 23:27:21,051 [INFO] RedditShortsPipeline: ▶ STARTING STAGE: YouTube Upload
+2026-07-08 23:27:21,052 [INFO] RedditShortsPipeline: ✔ FINISHED STAGE: YouTube Upload in 0.00s | Metadata: {'status': 'skipped'}
+2026-07-08 23:27:21,052 [INFO] RedditShortsPipeline: Cleaning up temporary render files...
