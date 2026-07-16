@@ -16,13 +16,16 @@ load_dotenv(ROOT / ".env")
 
 def _env(key: str, default: str = "") -> str:
     """Helper to fetch config from environment."""
-    return os.environ.get(key, default)
+    val = os.environ.get(key)
+    if val is None or val.strip() == "":
+        return default
+    return val
 
 
 def _env_bool(key: str, default: bool = False) -> bool:
     """Helper to fetch boolean config from environment."""
     val = os.environ.get(key)
-    if val is None:
+    if val is None or val.strip() == "":
         return default
     return val.strip().lower() in ("true", "1", "yes", "on")
 
