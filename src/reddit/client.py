@@ -14,13 +14,24 @@ import config
 from src.logger import logger
 from src.reddit.models import RedditPost
 
-# Global headers mimicking the official Reddit iOS application to bypass CDN bot protection
-DEFAULT_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Reddit/2023.23.0",
-    "Accept": "*/*",
-    "Accept-Language": "en-US,en;q=0.9",
-    "Connection": "keep-alive"
-}
+# User Agent pool for rotation to bypass CDN bot protection
+USER_AGENTS = [
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 16_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Reddit/2023.23.0",
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Mobile/15E148 Safari/604.1",
+    "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Mobile Safari/537.36",
+    "Mozilla/5.0 (Linux; Android 12; SM-S906B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/104.0.0.0 Mobile Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36"
+]
+
+def get_headers() -> dict:
+    return {
+        "User-Agent": random.choice(USER_AGENTS),
+        "Accept": "*/*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Connection": "keep-alive"
+    }
+
 
 
 def load_processed_ids() -> Set[str]:
@@ -51,7 +62,36 @@ def load_processed_ids() -> Set[str]:
     return ids
 
 
-def save_processed_id(post_id: str) -> None:
+def load_subreddit_history() -> List[str]:
+    """Load the list of recently processed subreddits."""
+    history_file = config.DB_DIR / "subreddit_history.json"
+    if history_file.exists():
+        try:
+            with open(history_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, list):
+                    return data
+        except Exception as e:
+            logger.warning(f"Failed to read subreddit history: {e}")
+    return []
+
+
+def save_subreddit_history(subreddit: str) -> None:
+    """Save the selected subreddit to history for diversity tracking."""
+    history_file = config.DB_DIR / "subreddit_history.json"
+    history = load_subreddit_history()
+    history.append(subreddit)
+    # Keep only the last 5 entries
+    history = history[-5:]
+    try:
+        config.DB_DIR.mkdir(parents=True, exist_ok=True)
+        with open(history_file, "w", encoding="utf-8") as f:
+            json.dump(history, f, indent=2)
+    except Exception as e:
+        logger.error(f"Failed to save subreddit history: {e}")
+
+
+def save_processed_id(post_id: str, subreddit: Optional[str] = None) -> None:
     """Save a processed Reddit post ID to prevent duplicates."""
     processed = load_processed_ids()
     processed.add(post_id)
@@ -60,6 +100,8 @@ def save_processed_id(post_id: str) -> None:
         with open(config.HISTORY_FILE, "w", encoding="utf-8") as f:
             json.dump(sorted(list(processed)), f, indent=2)
         logger.info(f"Saved Reddit ID {post_id} to history database")
+        if subreddit:
+            save_subreddit_history(subreddit)
     except Exception as e:
         logger.error(f"Failed to save Reddit ID to history: {e}")
 
@@ -73,7 +115,7 @@ def _fetch_anonymous_json(subreddit: str, sort: str, time_filter: str) -> List[d
     
     logger.info(f"Fetching posts from anonymous Reddit feed: {url}")
     try:
-        response = session_client.get(url, params=params, headers=DEFAULT_HEADERS, timeout=15)
+        response = session_client.get(url, params=params, headers=get_headers(), timeout=15)
         response.raise_for_status()
         data = response.json()
         children = data.get("data", {}).get("children", [])
@@ -167,7 +209,7 @@ def _fetch_with_rss(subreddit: str) -> List[dict]:
     url = f"https://old.reddit.com/r/{subreddit}/.rss"
     logger.info(f"Fetching posts from anonymous RSS feed: {url}")
     try:
-        response = session_client.get(url, headers=DEFAULT_HEADERS, timeout=15)
+        response = session_client.get(url, headers=get_headers(), timeout=15)
         response.raise_for_status()
         if not response.content.strip():
             logger.warning("Empty response from RSS feed")
@@ -250,6 +292,107 @@ def _fetch_with_rss(subreddit: str) -> List[dict]:
         return []
 
 
+def _fetch_with_rss2json(subreddit: str) -> List[dict]:
+    """Fetch posts using the free public rss2json.com API as a third-party proxy fallback."""
+    import html.parser
+    import re as _re
+    
+    class HTMLTextExtractor(html.parser.HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.text = []
+            self.images = []      # <img src="..."> URLs
+            self.link_hrefs = []  # <a href="..."> URLs
+        def handle_data(self, data):
+            self.text.append(data)
+        def handle_starttag(self, tag, attrs):
+            attrs_dict = dict(attrs)
+            if tag == "img":
+                src = attrs_dict.get("src", "")
+                if src:
+                    self.images.append(src)
+            elif tag == "a":
+                href = attrs_dict.get("href", "")
+                if href:
+                    self.link_hrefs.append(href)
+        def get_text(self):
+            return "".join(self.text)
+
+    # Encode the rss_url parameter properly
+    rss_url = f"https://www.reddit.com/r/{subreddit}/.rss"
+    encoded_url = urllib.parse.quote_plus(rss_url)
+    url = f"https://api.rss2json.com/v1/api.json?rss_url={encoded_url}"
+    logger.info(f"Fetching posts from rss2json proxy for r/{subreddit}")
+    try:
+        response = session_client.get(url, headers=get_headers(), timeout=15)
+        response.raise_for_status()
+        data = response.json()
+        
+        posts = []
+        for item in data.get("items", []):
+            post_id_val = item.get("guid", "")
+            if post_id_val.startswith("t3_"):
+                post_id_val = post_id_val[3:]
+                
+            title = item.get("title", "")
+            permalink = item.get("link", "")
+            
+            author = item.get("author", "[deleted]")
+            if author.startswith("/u/"):
+                author = author[3:]
+                
+            html_content = item.get("description", "") or item.get("content", "")
+            
+            extractor = HTMLTextExtractor()
+            extractor.feed(html_content)
+            selftext = extractor.get_text().strip()
+            
+            # Extract image URL
+            image_url = ""
+            valid_img_extensions = ('.jpg', '.jpeg', '.png', '.webp', '.gif')
+            
+            # 1) Check <a> href tags first
+            for href in extractor.link_hrefs:
+                href_lower = href.lower().split("?")[0]
+                if ("i.redd.it" in href_lower or "i.imgur.com" in href_lower):
+                    if any(href_lower.endswith(ext) for ext in valid_img_extensions):
+                        image_url = href.split("?")[0]
+                        break
+            
+            # 2) Fallback: regex scan
+            if not image_url:
+                direct_patterns = _re.findall(
+                    r'https?://(?:i\.redd\.it|i\.imgur\.com)/[^\s"<>?]+?(?:\.jpg|\.jpeg|\.png|\.webp|\.gif)',
+                    html_content,
+                    _re.IGNORECASE
+                )
+                if direct_patterns:
+                    image_url = direct_patterns[0]
+            
+            if not image_url:
+                continue
+                
+            posts.append({
+                "id": post_id_val,
+                "subreddit": subreddit,
+                "title": title,
+                "selftext": selftext,
+                "score": config.REDDIT_MIN_SCORE + 100,
+                "num_comments": config.REDDIT_MIN_COMMENTS + 10,
+                "over_18": False,
+                "is_self": False,
+                "permalink": permalink,
+                "author": author,
+                "pinned": False,
+                "crosspost_parent": None,
+                "url": image_url
+            })
+        return posts
+    except Exception as e:
+        logger.warning(f"rss2json proxy fetch failed for r/{subreddit}: {e}")
+        return []
+
+
 def fetch_posts(subreddit: str, sort: str = "top", time_filter: str = "week") -> List[RedditPost]:
     """Fetch posts from a subreddit, mapping them to RedditPost dataclasses."""
     raw_posts = _fetch_with_praw(subreddit, sort, time_filter)
@@ -259,6 +402,9 @@ def fetch_posts(subreddit: str, sort: str = "top", time_filter: str = "week") ->
         
     if not raw_posts:
         raw_posts = _fetch_with_rss(subreddit)
+        
+    if not raw_posts:
+        raw_posts = _fetch_with_rss2json(subreddit)
         
     posts = []
     for rp in raw_posts:
@@ -356,8 +502,9 @@ def download_meme_image(url: str) -> Path:
 
 def get_random_reddit_post() -> Optional[RedditPost]:
     """
-    Fetch posts across configurable subreddits, apply filters, 
-    and pick a random eligible post.
+    Fetch posts across configurable subreddits, apply filters,
+    and pick an eligible post using weighted random selection
+    to prioritize preferred subreddits while enforcing diversity.
     """
     subreddits = config.SUBREDDITS
     if not subreddits:
@@ -372,15 +519,69 @@ def get_random_reddit_post() -> Optional[RedditPost]:
     logger.info(f"Searching subreddits for posts: r/{combined_subs}")
     posts = fetch_posts(combined_subs, config.REDDIT_SORT, config.REDDIT_TIME_FILTER)
     
+    # Filter out ineligible posts first
+    valid_posts = []
     if posts:
-        random.shuffle(posts)
         for post in posts:
             filter_reason = filter_post(post, processed_ids)
             if filter_reason is None:
-                logger.info(f"🎉 Selected Reddit Post: r/{post.subreddit} - ID: {post.id} - Title: {post.title[:50]}...")
-                return post
+                valid_posts.append(post)
             else:
                 logger.debug(f"Filtered out r/{post.subreddit} post {post.id}: {filter_reason}")
                 
-    logger.error("❌ No eligible Reddit posts found matching all filters across all subreddits.")
-    return None
+    # Fallback to individual fetching if no valid posts were found from the combined feed
+    if not valid_posts:
+        logger.warning("Combined feed failed/empty or contained no fresh valid posts. Falling back to individual subreddit fetching.")
+        shuffled_subs = list(subreddits)
+        random.shuffle(shuffled_subs)
+        for sub in shuffled_subs:
+            logger.info(f"Attempting fallback fetch for individual subreddit: r/{sub}")
+            sub_posts = fetch_posts(sub, config.REDDIT_SORT, config.REDDIT_TIME_FILTER)
+            if sub_posts:
+                sub_valid_count = 0
+                for post in sub_posts:
+                    filter_reason = filter_post(post, processed_ids)
+                    if filter_reason is None:
+                        valid_posts.append(post)
+                        sub_valid_count += 1
+                    else:
+                        logger.debug(f"Filtered out r/{post.subreddit} post {post.id}: {filter_reason}")
+                if sub_valid_count > 0:
+                    logger.info(f"Found {sub_valid_count} valid posts in r/{sub}")
+                if len(valid_posts) >= 5:
+                    break
+            # Pause briefly to respect Reddit rate limits
+            time.sleep(1.5)
+
+    if not valid_posts:
+        logger.error("❌ No eligible Reddit posts found matching all filters across all subreddits.")
+        return None
+
+    # Load subreddit history to implement a soft diversity penalty
+    recent_subreddits = load_subreddit_history()
+    
+    # Calculate selection weights for each valid post
+    weights = []
+    for post in valid_posts:
+        # Get base configured weight
+        base_w = config.SUBREDDIT_WEIGHTS.get(post.subreddit, 1.0)
+        
+        # Apply a penalty if the subreddit was used recently to mix different styles naturally
+        if recent_subreddits:
+            if post.subreddit == recent_subreddits[-1]:
+                base_w *= 0.1  # Heavy penalty for immediate repeat
+            elif post.subreddit in recent_subreddits[-2:]:
+                base_w *= 0.3  # Medium penalty
+            elif post.subreddit in recent_subreddits:
+                base_w *= 0.6  # Light penalty
+                
+        weights.append(max(0.01, base_w))
+
+    # Perform weighted random choice
+    selected_post = random.choices(valid_posts, weights=weights, k=1)[0]
+    weight_val = config.SUBREDDIT_WEIGHTS.get(selected_post.subreddit, 1.0)
+    logger.info(
+        f"🎉 Weighted Selected Reddit Post: r/{selected_post.subreddit} (base weight: {weight_val}) - "
+        f"ID: {selected_post.id} - Title: {selected_post.title[:50]}..."
+    )
+    return selected_post

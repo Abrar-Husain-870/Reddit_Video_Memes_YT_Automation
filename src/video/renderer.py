@@ -1,4 +1,5 @@
 import os
+import random
 import re
 import subprocess
 import sys
@@ -190,7 +191,8 @@ def render_short(
     sentence_timings: List[dict] | None = None,
     style: str = "chaotic",
     emphasis_words: List[str] | None = None,
-    is_cat_clip: bool = False
+    is_cat_clip: bool = False,
+    is_greenscreen: bool = False
 ) -> Path:
     """Render a fully customized 9:16 vertical Short at 60 FPS."""
     if output_path is None:
@@ -203,14 +205,10 @@ def render_short(
     
     # Calculate freeze duration and total render duration
     if is_cat_clip:
-        freeze_dur = 2.0 + audio_dur + 3.0
-        cat_dur = 5.0
-        try:
-            cat_dur = _get_audio_duration(clip_path)
-        except Exception as e:
-            logger.warning(f"Failed to get cat clip duration: {e}. Using 5.0s default.")
+        freeze_dur = 2.0 + audio_dur  # Start reaction live play exactly when voiceover ends
+        cat_dur = 4.5  # reaction motion duration is exactly 4.5 seconds
         render_duration = freeze_dur + cat_dur
-        logger.info(f"Rendering pipeline (Cat Reaction): Static freeze for {freeze_dur:.2f}s, then motion for {cat_dur:.2f}s | Total duration: {render_duration:.2f}s")
+        logger.info(f"Rendering pipeline (Cat Reaction): Static freeze for {freeze_dur:.2f}s, then motion for {cat_dur:.2f}s | Total duration: {render_duration:.2f}s | Greenscreen: {is_greenscreen}")
     else:
         freeze_dur = 0.0
         render_duration = min(59.0, audio_dur + 2.0 + 3.0)
@@ -254,6 +252,8 @@ def render_short(
     #   landscape       (AR < 2.00):  meme gets ~47% of content →  752px
     #   ultra-wide      (AR >= 2.0):  meme gets ~42% of content →  672px
     #
+    # Both normal and greenscreen reaction layouts use adaptive vertical splits
+    # to guarantee that the reaction overlay never overlaps or obstructs the meme image.
     if meme_ar < 0.55:
         meme_zone_h = 1088
     elif meme_ar < 0.85:
@@ -276,8 +276,22 @@ def render_short(
     # ── Step 3: Fit dimensions for foreground assets (with safe margins) ──────
     meme_fit_w = CANVAS_W - 2 * MARGIN   # 1032
     meme_fit_h = meme_zone_h - 2 * MARGIN
-    cat_fit_w  = CANVAS_W - 2 * MARGIN
-    cat_fit_h  = cat_zone_h  - 2 * MARGIN
+
+    if is_greenscreen:
+        # Bounding box constraint from config (prevents the animal from looking tiny)
+        # Constrain height to fit completely within the dedicated bottom cat zone
+        max_gs_w = config.GREENSCREEN_MAX_WIDTH
+        max_gs_h = min(config.GREENSCREEN_MAX_HEIGHT, cat_zone_h - 2 * MARGIN)
+        gs_w = max_gs_w
+        gs_h = int(max_gs_w / cat_ar)
+        if gs_h > max_gs_h:
+            gs_h = max_gs_h
+            gs_w = int(max_gs_h * cat_ar)
+        cat_fit_w = make_even(gs_w)
+        cat_fit_h = make_even(gs_h)
+    else:
+        cat_fit_w  = CANVAS_W - 2 * MARGIN
+        cat_fit_h  = cat_zone_h  - 2 * MARGIN
 
     # ── Step 4: Subtitle y-positions (within caption bar, \an8 top-center) ───
     y_list = [140, 160, 180, 150, 170]
@@ -305,68 +319,139 @@ def render_short(
             f"color=c=#111111:s={CANVAS_W}x{CAPTION_H}:r=60[caption_bar]"
         )
 
-        # ── B. Cat stream: frozen thumbnail → live playback at freeze_dur ──
-        filter_chains.append(
-            "[0:v]trim=duration=0.1,loop=loop=-1:size=1:start=0,"
-            "setpts=PTS-STARTPTS[cat_frozen]"
-        )
-        filter_chains.append(
-            f"[0:v]setpts=PTS+{freeze_dur}/TB[cat_live]"
-        )
-        filter_chains.append(
-            f"[cat_frozen][cat_live]overlay=enable='gt(t,{freeze_dur})':"
-            f"eof_action=pass[cat_combined]"
-        )
+        if is_greenscreen:
+            # ── B. Greenscreen keying on-the-fly ───────────────────────────
+            ck_color      = config.GREENSCREEN_CHROMA_COLOR
+            ck_similarity = config.GREENSCREEN_CHROMA_SIMILARITY
+            ck_blend      = config.GREENSCREEN_CHROMA_BLEND
 
-        # ── C. Cat zone: blurred background + letterboxed foreground ───────
-        # Split combined cat stream so we can use it for both bg and fg
-        filter_chains.append("[cat_combined]split=2[cat_bg_src][cat_fg_src]")
+            filter_chains.append(
+                f"[0:v]chromakey=color={ck_color}:similarity={ck_similarity}:"
+                f"blend={ck_blend},despill,split=2[cat_keyed1][cat_keyed2]"
+            )
+            filter_chains.append(
+                f"[cat_keyed1]trim=duration=0.1,loop=loop=-1:size=1:start=0,"
+                f"setpts=PTS-STARTPTS,trim=duration={freeze_dur}[cat_frozen]"
+            )
+            filter_chains.append(
+                f"[cat_keyed2]trim=duration={cat_dur},setpts=PTS-STARTPTS[cat_live]"
+            )
+            filter_chains.append(
+                f"[cat_frozen][cat_live]concat=n=2:v=1:a=0[cat_combined]"
+            )
+            # Scale key-rendered animal keeping aspect ratio (adaptive scaling)
+            filter_chains.append(
+                f"[cat_combined]scale={cat_fit_w}:{cat_fit_h}:"
+                f"force_original_aspect_ratio=decrease[cat_scaled]"
+            )
 
-        # Blurred bg: scale to cover-fill the cat zone, then blur heavily
-        filter_chains.append(
-            f"[cat_bg_src]scale={CANVAS_W}:{cat_zone_h}:"
-            f"force_original_aspect_ratio=increase,"
-            f"crop={CANVAS_W}:{cat_zone_h},"
-            f"boxblur=35:5[cat_blur_bg]"
-        )
-        # Foreground: fit inside zone with safe margins, preserve AR exactly
-        filter_chains.append(
-            f"[cat_fg_src]scale={cat_fit_w}:{cat_fit_h}:"
-            f"force_original_aspect_ratio=decrease[cat_fg]"
-        )
-        # Compose: fg centred over blurred bg
-        filter_chains.append(
-            f"[cat_blur_bg][cat_fg]overlay="
-            f"x=(W-w)/2:y=(H-h)/2[cat_zone]"
-        )
+            # ── C. Meme zone (full content height for greenscreen overlay) ──
+            filter_chains.append("[2:v]split=2[meme_bg_src][meme_fg_src]")
+            filter_chains.append(
+                f"[meme_bg_src]scale={CANVAS_W}:{meme_zone_h}:"
+                f"force_original_aspect_ratio=increase,"
+                f"crop={CANVAS_W}:{meme_zone_h},"
+                f"boxblur=45:5[meme_blur_bg]"
+            )
+            filter_chains.append(
+                f"[meme_fg_src]scale={meme_fit_w}:{meme_fit_h}:"
+                f"force_original_aspect_ratio=decrease[meme_fg]"
+            )
+            filter_chains.append(
+                f"[meme_blur_bg][meme_fg]overlay="
+                f"x=(W-w)/2:y='(H-h)/2+6*sin(2*PI*t/3.5)'[meme_zone]"
+            )
 
-        # ── D. Meme zone: blurred background + fitted foreground ───────────
-        filter_chains.append("[2:v]split=2[meme_bg_src][meme_fg_src]")
+            # Create a dedicated dark background for the reaction zone at the bottom
+            filter_chains.append(
+                f"color=c=#111111:s={CANVAS_W}x{cat_zone_h}:r=60[cat_bg_zone]"
+            )
+            # Stack Caption + Meme Zone + Cat Background Zone
+            filter_chains.append(
+                "[caption_bar][meme_zone][cat_bg_zone]vstack=inputs=3[v_base]"
+            )
 
-        # Blurred bg: scale to cover-fill the meme zone, then blur heavily
-        filter_chains.append(
-            f"[meme_bg_src]scale={CANVAS_W}:{meme_zone_h}:"
-            f"force_original_aspect_ratio=increase,"
-            f"crop={CANVAS_W}:{meme_zone_h},"
-            f"boxblur=45:5[meme_blur_bg]"
-        )
-        # Foreground: fit inside zone with safe margins, preserve AR exactly
-        filter_chains.append(
-            f"[meme_fg_src]scale={meme_fit_w}:{meme_fit_h}:"
-            f"force_original_aspect_ratio=decrease[meme_fg]"
-        )
-        # Compose: fg centred over blurred bg (gentle float animation)
-        filter_chains.append(
-            f"[meme_blur_bg][meme_fg]overlay="
-            f"x=(W-w)/2:y='(H-h)/2+6*sin(2*PI*t/3.5)'[meme_zone]"
-        )
+            # ── D. Overlay keyed animal at random position ─────────────────
+            placement = random.choice([
+                "bottom-center",
+                "bottom-left",
+                "bottom-right",
+                "slightly-above-bottom"
+            ])
+            logger.info(f"Greenscreen animal placement chosen: {placement}")
+            
+            if placement == "bottom-left":
+                overlay_x = "24"
+                overlay_y = "1920-h-24"
+            elif placement == "bottom-right":
+                overlay_x = "1080-w-24"
+                overlay_y = "1920-h-24"
+            elif placement == "slightly-above-bottom":
+                overlay_x = "(1080-w)/2"
+                overlay_y = "1920-h-180"
+            else: # bottom-center
+                overlay_x = "(1080-w)/2"
+                overlay_y = "1920-h-24"
 
-        # ── E. Stack all 3 zones: caption | meme | cat ─────────────────────
-        filter_chains.append(
-            "[caption_bar][meme_zone][cat_zone]vstack=inputs=3[v_layout]"
-        )
+            filter_chains.append(
+                f"[v_base][cat_scaled]overlay=x='{overlay_x}':y='{overlay_y}'[v_layout]"
+            )
+            last_v_tag = "v_layout"
 
-        last_v_tag = "v_layout"
+        else:
+            # ── Normal cat layout (3-section stack) ────────────────────────
+            filter_chains.append("[0:v]split=2[cat_src1][cat_src2]")
+            filter_chains.append(
+                f"[cat_src1]trim=duration=0.1,loop=loop=-1:size=1:start=0,"
+                f"setpts=PTS-STARTPTS,trim=duration={freeze_dur}[cat_frozen]"
+            )
+            filter_chains.append(
+                f"[cat_src2]trim=duration={cat_dur},setpts=PTS-STARTPTS[cat_live]"
+            )
+            filter_chains.append(
+                f"[cat_frozen][cat_live]concat=n=2:v=1:a=0[cat_combined]"
+            )
+
+            # Cat zone: blurred background + letterboxed foreground
+            filter_chains.append("[cat_combined]split=2[cat_bg_src][cat_fg_src]")
+            filter_chains.append(
+                f"[cat_bg_src]scale={CANVAS_W}:{cat_zone_h}:"
+                f"force_original_aspect_ratio=increase,"
+                f"crop={CANVAS_W}:{cat_zone_h},"
+                f"boxblur=35:5[cat_blur_bg]"
+            )
+            filter_chains.append(
+                f"[cat_fg_src]scale={cat_fit_w}:{cat_fit_h}:"
+                f"force_original_aspect_ratio=decrease[cat_fg]"
+            )
+            filter_chains.append(
+                f"[cat_blur_bg][cat_fg]overlay="
+                f"x=(W-w)/2:y=(H-h)/2[cat_zone]"
+            )
+
+            # Meme zone: blurred background + fitted foreground
+            filter_chains.append("[2:v]split=2[meme_bg_src][meme_fg_src]")
+            filter_chains.append(
+                f"[meme_bg_src]scale={CANVAS_W}:{meme_zone_h}:"
+                f"force_original_aspect_ratio=increase,"
+                f"crop={CANVAS_W}:{meme_zone_h},"
+                f"boxblur=45:5[meme_blur_bg]"
+            )
+            filter_chains.append(
+                f"[meme_fg_src]scale={meme_fit_w}:{meme_fit_h}:"
+                f"force_original_aspect_ratio=decrease[meme_fg]"
+            )
+            filter_chains.append(
+                f"[meme_blur_bg][meme_fg]overlay="
+                f"x=(W-w)/2:y='(H-h)/2+6*sin(2*PI*t/3.5)'[meme_zone]"
+            )
+
+            # Stack Caption + Meme + Cat
+            filter_chains.append(
+                "[caption_bar][meme_zone][cat_zone]vstack=inputs=3[v_layout]"
+            )
+
+            last_v_tag = "v_layout"
 
     else:
         # ── Standard gameplay background (no cat clip) ─────────────────────

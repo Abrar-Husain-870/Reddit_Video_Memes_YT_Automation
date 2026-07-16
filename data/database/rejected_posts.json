@@ -22,5 +22,29 @@
     "detection_category": "llm_api_failure",
     "reason": "Strict mode fail-safe: Contextual safety check API failed/timed out. Error: 404 models/gemini-1.5-flash is not found for API version v1beta, or is not supported for generateContent. Call ModelService.ListModels to see the list of available models and their supported methods.",
     "timestamp": "2026-07-16T19:04:43Z"
+  },
+  {
+    "reddit_id": "1uy5i83",
+    "subreddit": "memes+dankmemes+me_irl+funny+wholesomememes+AdviceAnimals+blursedimages+perfectlycutscreams+AnimalsBeingDerps+cats+dogs+meme+meirl",
+    "risk_score": "Low Appeal",
+    "detection_category": "meme_suitability_filter",
+    "reason": "The meme relies on current events and a well-known public figure, making it accessible to a broad audience.",
+    "timestamp": "2026-07-16T23:22:36Z"
+  },
+  {
+    "reddit_id": "1uxsi79",
+    "subreddit": "funny",
+    "risk_score": "Low Appeal",
+    "detection_category": "meme_suitability_filter",
+    "reason": "The humor comes from the relatable and ironic comment on the typical online experience of seeing a reasonable number of ads.",
+    "timestamp": "2026-07-16T23:35:15Z"
+  },
+  {
+    "reddit_id": "1uxopnb",
+    "subreddit": "AdviceAnimals",
+    "risk_score": "Low Appeal",
+    "detection_category": "meme_suitability_filter",
+    "reason": "The meme relies on a common understanding of the Trump presidency and the concept of irony.",
+    "timestamp": "2026-07-16T23:37:43Z"
   }
 ]

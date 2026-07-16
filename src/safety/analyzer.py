@@ -410,6 +410,86 @@ class ContentSafetyAnalyzer:
             "reason": reason
         }
 
+    def check_meme_suitability(self, title: str, image_path: Path) -> Dict[str, any]:
+        """
+        Evaluates a meme's suitability and appeal using LLM.
+        Rates: humor, simplicity, universal_appeal, family_friendly, requires_background_knowledge.
+        """
+        system_prompt = (
+            "You are an expert meme evaluation assistant.\n"
+            "Your task is to analyze the provided meme image and/or title, and evaluate its humor, simplicity, universal appeal, family friendliness, and background knowledge requirements.\n\n"
+            "Meme Selection Criteria:\n"
+            "- Humor: How funny is the meme? (1-10)\n"
+            "- Simplicity: How simple is the meme to understand? (1-10) High score (8-10) means it can be understood in 2-3 seconds. Low score (1-5) means it is complex, wordy, or confusing.\n"
+            "- Universal Appeal: How relatable is this meme to a general broad audience (teenagers to adults)? (1-10) High score (8-10) means it is about daily life, animals, food, school, or cartoons. Low score (1-5) means it is about politics, religion, programming, finance, history, philosophy, or specific local/regional context.\n"
+            "- Family Friendliness: Does the meme avoid NSFW content, politics, religion, offensive humor, drugs, violence, hate speech, or YouTube policy violations? (Pass/Fail)\n"
+            "- Requires Background Knowledge: Does the viewer need specialized knowledge (e.g. software development, advanced math, specific crypto coins, complex history, deep Reddit lore, or specific anime/niche games) to understand the joke? (Yes/No)\n\n"
+            "You must respond ONLY with a raw JSON object containing these keys. Do not include markdown codeblocks (no ```json or similar tags):\n"
+            "{\n"
+            "  \"humor\": 1-10,\n"
+            "  \"simplicity\": 1-10,\n"
+            "  \"universal_appeal\": 1-10,\n"
+            "  \"family_friendly\": \"Pass\" or \"Fail\",\n"
+            "  \"requires_background_knowledge\": \"Yes\" or \"No\",\n"
+            "  \"reason\": \"A brief 1-sentence explanation of your rating.\"\n"
+            "}"
+        )
+        
+        user_prompt = f"Meme Title: {title}"
+        
+        try:
+            response_text = self._call_llm(system_prompt, user_prompt, image_path)
+            cleaned = response_text.strip()
+            if cleaned.startswith("```"):
+                cleaned = re.sub(r"^```[a-zA-Z0-9]*\n", "", cleaned)
+                cleaned = re.sub(r"\n```$", "", cleaned)
+                cleaned = cleaned.strip()
+            
+            start = cleaned.find("{")
+            end = cleaned.rfind("}")
+            if start != -1 and end != -1:
+                cleaned = cleaned[start:end+1]
+                
+            data = json.loads(cleaned)
+            
+            humor = int(data.get("humor", 0))
+            simplicity = int(data.get("simplicity", 0))
+            universal_appeal = int(data.get("universal_appeal", 0))
+            family_friendly = data.get("family_friendly", "").strip().lower()
+            requires_bk = data.get("requires_background_knowledge", "").strip().lower()
+            
+            passed = (
+                humor >= 7 and
+                simplicity >= 8 and
+                universal_appeal >= 8 and
+                family_friendly == "pass" and
+                requires_bk == "no"
+            )
+            
+            logger.info(
+                f"Meme suitability evaluation: passed={passed} | "
+                f"humor={humor}/10, simplicity={simplicity}/10, universal_appeal={universal_appeal}/10, "
+                f"family_friendly={family_friendly}, requires_bk={requires_bk}"
+            )
+            
+            return {
+                "passed": passed,
+                "ratings": data
+            }
+        except Exception as e:
+            logger.warning(f"LLM meme suitability rating failed: {e}. Defaulting to Pass to avoid blocker.")
+            return {
+                "passed": True,
+                "ratings": {
+                    "humor": 7,
+                    "simplicity": 8,
+                    "universal_appeal": 8,
+                    "family_friendly": "Pass",
+                    "requires_background_knowledge": "No",
+                    "reason": f"Meme suitability rating failed, passed by default. Error: {str(e)}"
+                }
+            }
+
 def log_rejected_post(post_id: str, subreddit: str, risk_score: str, category: str, reason: str) -> None:
     """Logs rejected post details to rejected_posts.json to ensure they are never retried."""
     rejected_file = config.DB_DIR / "rejected_posts.json"

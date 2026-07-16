@@ -171,6 +171,23 @@ def main() -> None:
                 )
                 continue  # Skip and fetch another Reddit post automatically
 
+            # Stage 1.2: Meme Suitability & Universal Appeal check
+            suitability_res = safety_analyzer.check_meme_suitability(
+                title=post.title,
+                image_path=meme_image_path
+            )
+            if not suitability_res["passed"]:
+                reason_str = suitability_res["ratings"].get("reason", "Failed appeal/suitability criteria")
+                logger.warning(f"Post {post.id} rejected for low appeal/suitability. Reason: {reason_str}")
+                log_rejected_post(
+                    post_id=post.id,
+                    subreddit=post.subreddit,
+                    risk_score="Low Appeal",
+                    category="meme_suitability_filter",
+                    reason=reason_str
+                )
+                continue  # Skip and fetch another Reddit post automatically
+
             # Step 2: Narration Scripting
             log_stage_start("Script Generation")
             narration_mode = args.mode or config.NARRATION_MODE
@@ -262,24 +279,26 @@ def main() -> None:
         log_stage_start("Background Selection")
         bg_clip = None
         is_cat_clip = False
+        is_greenscreen = False
         
         if config.ENABLE_CAT_REACTIONS:
-            bg_clip = get_cat_reaction_clip()
+            bg_clip, is_greenscreen = get_cat_reaction_clip()
             if bg_clip:
                 is_cat_clip = True
-                logger.info(f"Using cat reaction clip: {bg_clip.name}")
+                logger.info(f"Using cat reaction clip: {bg_clip.name} (greenscreen={is_greenscreen})")
             else:
                 logger.warning("ENABLE_CAT_REACTIONS is True but no cat clips found. Falling back to gameplay background.")
                 
         if not bg_clip:
             bg_clip = get_background_clip(skip_download=args.skip_download)
+            is_greenscreen = False
             
         if not bg_clip or not bg_clip.exists():
             error_msg = "Could not retrieve background / cat video clip"
             log_stage_error("Background Selection", error_msg, fatal=True)
             sys.exit(1)
 
-        log_stage_finish("Background Selection", {"filename": bg_clip.name, "is_cat": is_cat_clip})
+        log_stage_finish("Background Selection", {"filename": bg_clip.name, "is_cat": is_cat_clip, "is_greenscreen": is_greenscreen})
 
         # ── Step 4: Overlay Selection ────────────────────────
         log_stage_start("Overlay Selection")
@@ -311,7 +330,8 @@ def main() -> None:
                 sentence_timings=sentence_timings,
                 style=style,
                 emphasis_words=emphasis,
-                is_cat_clip=is_cat_clip
+                is_cat_clip=is_cat_clip,
+                is_greenscreen=is_greenscreen
             )
             log_stage_finish("Video Rendering", {"output_video": str(video_path)})
         except Exception as e:
@@ -320,7 +340,7 @@ def main() -> None:
 
         # ── Step 7: Update Databases ─────────────────────────
         log_stage_start("Database Update")
-        save_processed_id(post.id)
+        save_processed_id(post.id, post.subreddit)
         if not is_cat_clip:
             increment_background_usage(bg_clip.name)
         log_stage_finish("Database Update")

@@ -50,10 +50,34 @@ SUBREDDITS = [
     s.strip()
     for s in _env(
         "SUBREDDITS",
-        "memes, dankmemes, me_irl, meme, wholesomememes, funny, meirl",
+        "memes, dankmemes, me_irl, funny, wholesomememes, AdviceAnimals, blursedimages, perfectlycutscreams, AnimalsBeingDerps, cats, dogs, meme, meirl",
     ).split(",")
     if s.strip()
 ]
+
+# Configurable selection weights for each subreddit
+SUBREDDIT_WEIGHTS = {}
+for s in SUBREDDITS:
+    SUBREDDIT_WEIGHTS[s] = 1.0
+
+# High priority subreddits get configured weights
+_preferred_weights = {
+    "memes": 5.0,
+    "dankmemes": 4.0,
+    "me_irl": 4.0,
+    "funny": 3.0,
+    "wholesomememes": 5.0,
+    "AdviceAnimals": 3.0,
+    "blursedimages": 2.0,
+    "perfectlycutscreams": 3.0,
+    "AnimalsBeingDerps": 4.0,
+    "cats": 4.0,
+    "dogs": 4.0,
+}
+for s, w in _preferred_weights.items():
+    if s in SUBREDDIT_WEIGHTS:
+        SUBREDDIT_WEIGHTS[s] = float(_env(f"SUBREDDIT_WEIGHT_{s.upper()}", str(w)))
+
 REDDIT_SORT = _env("REDDIT_SORT", "top")  # top, hot, rising, new
 REDDIT_TIME_FILTER = _env("REDDIT_TIME_FILTER", "week")  # day, week, month, year, all
 REDDIT_MIN_SCORE = int(_env("REDDIT_MIN_SCORE", "100"))
@@ -185,7 +209,6 @@ ENABLE_CONTENT_SAFETY = _env_bool("ENABLE_CONTENT_SAFETY", True)
 SAFETY_MODE = _env("SAFETY_MODE", "strict").lower().strip()  # strict, standard, lenient
 MAX_ALLOWED_RISK = _env("MAX_ALLOWED_RISK", "low").lower().strip()  # safe, low, medium, high
 
-# ── Cat Reaction Settings ───────────────────────────────────
 CAT_REACTION_FOLDER = ROOT / _env("CAT_REACTION_FOLDER", "data/assets/cat_reactions")
 CAT_LAYOUT_HEIGHT = float(_env("CAT_LAYOUT_HEIGHT", "0.25"))
 MEME_LAYOUT_HEIGHT = float(_env("MEME_LAYOUT_HEIGHT", "0.75"))
@@ -193,3 +216,31 @@ ENABLE_CAT_REACTIONS = _env_bool("ENABLE_CAT_REACTIONS", True)
 CAT_SELECTION_MODE = _env("CAT_SELECTION_MODE", "random")
 CAT_AVOID_REPEAT = _env_bool("CAT_AVOID_REPEAT", True)
 CAT_HISTORY_FILE = CACHE_DIR / "cat_history.json"
+
+# ── Greenscreen Compilation Settings ────────────────────────────────────────
+# Name of the long greenscreen compilation inside CAT_REACTION_FOLDER.
+# The bot will never treat this file as a normal clip — it uses random segments.
+GREENSCREEN_FILE = ROOT / _env(
+    "GREENSCREEN_FILE",
+    "data/assets/cat_reactions/Long green screen video.mp4"
+)
+
+# Whether to enable greenscreen segment extraction at all
+USE_GREENSCREEN = _env_bool("USE_GREENSCREEN", True)
+
+# Probability (0.0 – 1.0) of choosing the greenscreen compilation instead of
+# a normal clip when both are available
+GREENSCREEN_PROBABILITY = float(_env("GREENSCREEN_PROBABILITY", "0.40"))
+
+# Length of the randomly extracted segment (seconds)
+GREENSCREEN_SEGMENT_MIN = float(_env("GREENSCREEN_SEGMENT_MIN", "4.5"))
+GREENSCREEN_SEGMENT_MAX = float(_env("GREENSCREEN_SEGMENT_MAX", "4.5"))
+
+# Chromakey parameters — tune these for the specific green used in the compilation
+GREENSCREEN_CHROMA_COLOR = _env("GREENSCREEN_CHROMA_COLOR", "0x00B140")  # YouTube green
+GREENSCREEN_CHROMA_SIMILARITY = float(_env("GREENSCREEN_CHROMA_SIMILARITY", "0.12"))
+GREENSCREEN_CHROMA_BLEND = float(_env("GREENSCREEN_CHROMA_BLEND", "0.08"))
+
+# Keyed greenscreen overlay canvas size constraint (prevents the animal reaction from looking tiny)
+GREENSCREEN_MAX_WIDTH = int(_env("GREENSCREEN_MAX_WIDTH", "800"))
+GREENSCREEN_MAX_HEIGHT = int(_env("GREENSCREEN_MAX_HEIGHT", "800"))
