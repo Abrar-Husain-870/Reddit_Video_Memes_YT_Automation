@@ -946,3 +946,97 @@ google.api_core.exceptions.NotFound: 404 models/gemini-1.5-flash is not found fo
 2026-07-17 00:34:58,301 [INFO] RedditShortsPipeline: Fetching posts from anonymous RSS feed: https://old.reddit.com/r/meme/.rss
 2026-07-17 00:34:59,279 [WARNING] RedditShortsPipeline: RSS feed fetch failed for r/meme: 429 Client Error: Too Many Requests for url: https://old.reddit.com/r/meme/.rss
 2026-07-17 00:34:59,279 [INFO] RedditShortsPipeline: Pausing for 5.0s to respect Reddit rate limits...
+2026-07-17 02:10:16,285 [INFO] RedditShortsPipeline: Generating mock images and videos of different aspect ratios...
+2026-07-17 02:10:16,287 [INFO] RedditShortsPipeline: Running: ffmpeg -y -f lavfi -i color=c=blue:s=600x1200 -frames:v 1 scratch\meme_portrait.png
+2026-07-17 02:10:17,206 [INFO] RedditShortsPipeline: Running: ffmpeg -y -f lavfi -i color=c=red:s=800x800 -frames:v 1 scratch\meme_square.png
+2026-07-17 02:10:17,325 [INFO] RedditShortsPipeline: Running: ffmpeg -y -f lavfi -i color=c=darkgreen:s=1200x600 -frames:v 1 scratch\meme_landscape.png
+2026-07-17 02:10:17,443 [ERROR] RedditShortsPipeline: No source cat video found to crop!
+2026-07-17 02:10:32,727 [INFO] RedditShortsPipeline: Generating mock images and videos of different aspect ratios...
+2026-07-17 02:10:32,728 [INFO] RedditShortsPipeline: Running: ffmpeg -y -f lavfi -i color=c=blue:s=600x1200 -frames:v 1 scratch\meme_portrait.png
+2026-07-17 02:10:32,851 [INFO] RedditShortsPipeline: Running: ffmpeg -y -f lavfi -i color=c=red:s=800x800 -frames:v 1 scratch\meme_square.png
+2026-07-17 02:10:32,979 [INFO] RedditShortsPipeline: Running: ffmpeg -y -f lavfi -i color=c=darkgreen:s=1200x600 -frames:v 1 scratch\meme_landscape.png
+2026-07-17 02:10:33,114 [INFO] RedditShortsPipeline: Running: ffmpeg -y -ss 0 -t 5 -i data\assets\cat_reactions\cat_02.mp4 -vf scale=540:960 -c:v libx264 -c:a aac scratch\cat_portrait.mp4
+2026-07-17 02:10:34,923 [INFO] RedditShortsPipeline: Running: ffmpeg -y -ss 0 -t 5 -i data\assets\cat_reactions\cat_02.mp4 -vf scale=600:600 -c:v libx264 -c:a aac scratch\cat_square.mp4
+2026-07-17 02:10:36,309 [INFO] RedditShortsPipeline: Running: ffmpeg -y -ss 0 -t 5 -i data\assets\cat_reactions\cat_02.mp4 -vf scale=960:540 -c:v libx264 -c:a aac scratch\cat_landscape.mp4
+2026-07-17 02:10:38,154 [INFO] RedditShortsPipeline: Running: ffmpeg -y -f lavfi -i anullsrc=r=44100:cl=mono -t 4 scratch\test_voice.mp3
+2026-07-17 02:10:38,338 [INFO] RedditShortsPipeline: 
+=======================================================
+2026-07-17 02:10:38,338 [INFO] RedditShortsPipeline: TESTING LAYOUT COMBINATION: PORTRAIT_MEME_X_PORTRAIT_CAT
+2026-07-17 02:10:38,338 [INFO] RedditShortsPipeline: =======================================================
+2026-07-17 02:10:39,328 [INFO] RedditShortsPipeline: Rendering pipeline (Cat Reaction): Static freeze for 9.00s, then motion for 5.00s | Total duration: 14.00s
+2026-07-17 02:10:39,623 [INFO] RedditShortsPipeline: Running FFmpeg render (60 FPS, preset: medium, output: test_out_portrait_meme_x_portrait_cat.mp4)
+2026-07-17 02:11:57,339 [INFO] RedditShortsPipeline: ✔ Short rendered successfully: test_out_portrait_meme_x_portrait_cat.mp4 (1.08MB, 60fps)
+2026-07-17 02:11:57,344 [INFO] RedditShortsPipeline: 
+=======================================================
+2026-07-17 02:11:57,344 [INFO] RedditShortsPipeline: TESTING LAYOUT COMBINATION: PORTRAIT_MEME_X_SQUARE_CAT
+2026-07-17 02:11:57,344 [INFO] RedditShortsPipeline: =======================================================
+2026-07-17 02:11:57,530 [INFO] RedditShortsPipeline: Rendering pipeline (Cat Reaction): Static freeze for 9.00s, then motion for 5.00s | Total duration: 14.00s
+2026-07-17 02:11:57,725 [INFO] RedditShortsPipeline: Running FFmpeg render (60 FPS, preset: medium, output: test_out_portrait_meme_x_square_cat.mp4)
+2026-07-17 02:14:28,346 [INFO] RedditShortsPipeline: ▶ STARTING STAGE: Scheduler Check
+2026-07-17 02:14:28,381 [INFO] RedditShortsPipeline: Uploads in last 24 hours: 4 (Limit: 4)
+2026-07-17 02:14:28,381 [INFO] RedditShortsPipeline: Scheduler Check: Blocked (daily limit of 4 uploads reached)
+2026-07-17 02:14:28,381 [INFO] RedditShortsPipeline: ✔ FINISHED STAGE: Scheduler Check in 0.04s | Metadata: {'should_run': False}
+2026-07-17 02:15:08,834 [INFO] RedditShortsPipeline: ▶ STARTING STAGE: Scheduler Check
+2026-07-17 02:15:08,834 [INFO] RedditShortsPipeline: Scheduler Check: Bypassed (--no-upload specified)
+2026-07-17 02:15:08,834 [INFO] RedditShortsPipeline: ✔ FINISHED STAGE: Scheduler Check in 0.00s | Metadata: {'should_run': True}
+2026-07-17 02:15:08,860 [INFO] RedditShortsPipeline: Attempting post safety verification (Try 1/15)...
+2026-07-17 02:15:08,861 [INFO] RedditShortsPipeline: ▶ STARTING STAGE: Reddit Ingestion
+2026-07-17 02:15:08,862 [INFO] RedditShortsPipeline: Searching subreddits for posts: r/memes+dankmemes+me_irl+meme+wholesomememes+funny+meirl
+2026-07-17 02:15:10,015 [INFO] RedditShortsPipeline: Fetching posts from anonymous Reddit feed: https://old.reddit.com/r/memes+dankmemes+me_irl+meme+wholesomememes+funny+meirl/top.json
+2026-07-17 02:15:11,611 [WARNING] RedditShortsPipeline: Public Reddit API fetch failed for r/memes+dankmemes+me_irl+meme+wholesomememes+funny+meirl: 403 Client Error: Blocked for url: https://old.reddit.com/r/memes+dankmemes+me_irl+meme+wholesomememes+funny+meirl/top.json?t=week
+2026-07-17 02:15:11,634 [INFO] RedditShortsPipeline: Fetching posts from anonymous RSS feed: https://old.reddit.com/r/memes+dankmemes+me_irl+meme+wholesomememes+funny+meirl/.rss
+2026-07-17 02:15:13,298 [INFO] RedditShortsPipeline: 🎉 Selected Reddit Post: r/memes+dankmemes+me_irl+meme+wholesomememes+funny+meirl - ID: 1uy1ef0 - Title: ....
+2026-07-17 02:15:13,299 [INFO] RedditShortsPipeline: ✔ FINISHED STAGE: Reddit Ingestion in 4.44s | Metadata: {'id': '1uy1ef0', 'subreddit': 'memes+dankmemes+me_irl+meme+wholesomememes+funny+meirl', 'title': '....'}
+2026-07-17 02:15:13,299 [INFO] RedditShortsPipeline: Downloading meme image from URL: https://i.redd.it/zs4wq3qp4ldh1.png
+2026-07-17 02:15:14,756 [INFO] RedditShortsPipeline: Meme image successfully saved to C:\Users\husai\Desktop\Reddit meme YT Shorts\Reddit-Automation-for-YT-Shorts\data\output\meme_image.png (1055718 bytes)
+2026-07-17 02:15:14,758 [INFO] RedditShortsPipeline: Running content safety analysis (Stage: After Ingestion)...
+2026-07-17 02:15:19,146 [WARNING] RedditShortsPipeline: Safety check with image failed (404 models/gemini-1.5-flash is not found for API version v1beta, or is not supported for generateContent. Call ModelService.ListModels to see the list of available models and their supported methods.). Falling back to text-only safety scan.
+2026-07-17 02:15:21,819 [INFO] httpx: HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+2026-07-17 02:15:21,976 [INFO] RedditShortsPipeline: LLM safety check succeeded. Risk: Safe, Categories: []
+2026-07-17 02:15:21,976 [INFO] RedditShortsPipeline: Safety check results (Stage: After Ingestion): Passed=True, Risk=Safe, AllowedMax=low
+2026-07-17 02:15:21,976 [INFO] RedditShortsPipeline: ▶ STARTING STAGE: Script Generation
+2026-07-17 02:15:22,769 [INFO] RedditShortsPipeline: Sending request to Groq model: llama-3.1-8b-instant
+2026-07-17 02:15:23,445 [INFO] httpx: HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+2026-07-17 02:15:23,452 [INFO] RedditShortsPipeline: ✔ FINISHED STAGE: Script Generation in 1.48s | Metadata: {'title': "Life's Little Moments", 'word_count': 14, 'emphasis_count': 3}
+2026-07-17 02:15:23,452 [INFO] RedditShortsPipeline: Generated Script Text:
+That one time I realized my cat is just as LAZY as I am
+Emphasis: ['LAZY', 'I', 'AM']
+2026-07-17 02:15:23,458 [INFO] RedditShortsPipeline: Generating optimized metadata for Short...
+2026-07-17 02:15:23,459 [INFO] RedditShortsPipeline: Metadata generated successfully:
+2026-07-17 02:15:23,459 [INFO] RedditShortsPipeline:    Optimized Title: Cat Lady Problems | When Your Pet is More Relaxed Than You
+2026-07-17 02:15:23,459 [INFO] RedditShortsPipeline:    Category ID: 23
+2026-07-17 02:15:23,460 [INFO] RedditShortsPipeline:    Tags Count: 20
+2026-07-17 02:15:23,460 [INFO] RedditShortsPipeline: Running content safety analysis (Stage: After Narration)...
+2026-07-17 02:15:24,489 [WARNING] RedditShortsPipeline: Safety check with image failed (404 models/gemini-1.5-flash is not found for API version v1beta, or is not supported for generateContent. Call ModelService.ListModels to see the list of available models and their supported methods.). Falling back to text-only safety scan.
+2026-07-17 02:15:25,838 [INFO] httpx: HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+2026-07-17 02:15:25,840 [INFO] RedditShortsPipeline: LLM safety check succeeded. Risk: Safe, Categories: []
+2026-07-17 02:15:25,841 [INFO] RedditShortsPipeline: Safety check results (Stage: After Narration): Passed=True, Risk=Safe, AllowedMax=low
+2026-07-17 02:15:25,841 [INFO] RedditShortsPipeline: Running content safety analysis (Stage: Before Rendering)...
+2026-07-17 02:15:26,426 [WARNING] RedditShortsPipeline: Safety check with image failed (404 models/gemini-1.5-flash is not found for API version v1beta, or is not supported for generateContent. Call ModelService.ListModels to see the list of available models and their supported methods.). Falling back to text-only safety scan.
+2026-07-17 02:15:27,464 [INFO] httpx: HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+2026-07-17 02:15:27,466 [INFO] RedditShortsPipeline: LLM safety check succeeded. Risk: Safe, Categories: []
+2026-07-17 02:15:27,466 [INFO] RedditShortsPipeline: Safety check results (Stage: Before Rendering): Passed=True, Risk=Safe, AllowedMax=low
+2026-07-17 02:15:27,466 [INFO] RedditShortsPipeline: 🎉 Post 1uy1ef0 passed all pre-rendering safety gates! Proceeding to rendering.
+2026-07-17 02:15:27,466 [INFO] RedditShortsPipeline: ▶ STARTING STAGE: Background Selection
+2026-07-17 02:15:27,468 [INFO] RedditShortsPipeline: Discovered 5 cat reaction clip(s) in cat_reactions
+2026-07-17 02:15:27,498 [INFO] RedditShortsPipeline: Selected cat clip: 'cat_06.mp4' (saved to history, current history size: 3/4)
+2026-07-17 02:15:27,499 [INFO] RedditShortsPipeline: Using cat reaction clip: cat_06.mp4
+2026-07-17 02:15:27,499 [INFO] RedditShortsPipeline: ✔ FINISHED STAGE: Background Selection in 0.03s | Metadata: {'filename': 'cat_06.mp4', 'is_cat': True}
+2026-07-17 02:15:27,500 [INFO] RedditShortsPipeline: ▶ STARTING STAGE: Overlay Selection
+2026-07-17 02:15:27,500 [INFO] RedditShortsPipeline: ✔ FINISHED STAGE: Overlay Selection in 0.00s | Metadata: {'path': 'C:\\Users\\husai\\Desktop\\Reddit meme YT Shorts\\Reddit-Automation-for-YT-Shorts\\data\\output\\meme_image.png'}
+2026-07-17 02:15:27,500 [INFO] RedditShortsPipeline: ▶ STARTING STAGE: Voice Synthesis
+2026-07-17 02:15:27,505 [INFO] RedditShortsPipeline: Synthesizing voiceover with Edge TTS (voice: en-US-AndrewNeural)
+2026-07-17 02:15:31,231 [INFO] RedditShortsPipeline: Generated Edge TTS voiceover: 3.82s (1 sentences)
+2026-07-17 02:15:31,231 [INFO] RedditShortsPipeline: ✔ FINISHED STAGE: Voice Synthesis in 3.73s | Metadata: {'duration_s': 3.816, 'sentences': 1}
+2026-07-17 02:15:31,231 [INFO] RedditShortsPipeline: ▶ STARTING STAGE: Video Rendering
+2026-07-17 02:15:31,435 [INFO] RedditShortsPipeline: Rendering pipeline (Cat Reaction): Static freeze for 8.82s, then motion for 5.69s | Total duration: 14.50s
+2026-07-17 02:15:31,632 [INFO] RedditShortsPipeline: Running FFmpeg render (60 FPS, preset: medium, output: final_short.mp4)
+2026-07-17 02:17:11,999 [INFO] RedditShortsPipeline: ✔ Short rendered successfully: final_short.mp4 (1.36MB, 60fps)
+2026-07-17 02:17:12,000 [INFO] RedditShortsPipeline: ✔ FINISHED STAGE: Video Rendering in 100.77s | Metadata: {'output_video': 'C:\\Users\\husai\\Desktop\\Reddit meme YT Shorts\\Reddit-Automation-for-YT-Shorts\\data\\output\\final_short.mp4'}
+2026-07-17 02:17:12,000 [INFO] RedditShortsPipeline: ▶ STARTING STAGE: Database Update
+2026-07-17 02:17:12,005 [INFO] RedditShortsPipeline: Saved Reddit ID 1uy1ef0 to history database
+2026-07-17 02:17:12,005 [INFO] RedditShortsPipeline: ✔ FINISHED STAGE: Database Update in 0.00s
+2026-07-17 02:17:12,005 [INFO] RedditShortsPipeline: ▶ STARTING STAGE: YouTube Upload
+2026-07-17 02:17:12,006 [INFO] RedditShortsPipeline: ✔ FINISHED STAGE: YouTube Upload in 0.00s | Metadata: {'status': 'skipped'}
+2026-07-17 02:17:12,006 [INFO] RedditShortsPipeline: Cleaning up temporary render files...
+2026-07-17 02:17:12,012 [WARNING] RedditShortsPipeline: Could not delete temp file meme_image.png: [WinError 32] The process cannot access the file because it is being used by another process: 'C:\\Users\\husai\\Desktop\\Reddit meme YT Shorts\\Reddit-Automation-for-YT-Shorts\\data\\output\\meme_image.png'
