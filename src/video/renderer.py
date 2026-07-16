@@ -23,7 +23,9 @@ STYLE_PALETTES = {
                "&H00DC7F93", "&H00E22B8A", "&H00D355BA", "&H00D670DA"],  # Purples/Pinks
 }
 
-ALTERNATE_Y = [1350, 1500, 1650, 1400, 1550, 1700]
+# y values are pixel distances from the TOP of the screen (used with \an8 top-center alignment)
+# Kept within the 0–320px caption bar; centred around y=160
+ALTERNATE_Y = [140, 160, 180, 150, 170, 155]
 
 
 def _get_audio_duration(path: Path) -> float:
@@ -132,7 +134,8 @@ def _build_ass_subtitles(
         ts_shifted = ts + 2.0
         te_shifted = te + 2.0
         
-        ass += f"Dialogue: 0,{_t(ts_shifted)},{_t(te_shifted)},{style_name},,0,0,{y_margin},,{{\\c{color}\\an5{pop_effect}}}{w}\n"
+        # \an8 = top-center alignment; MarginV is the pixel distance from the TOP edge
+        ass += f"Dialogue: 0,{_t(ts_shifted)},{_t(te_shifted)},{style_name},,0,0,{y_margin},,{{\\c{color}\\an8{pop_effect}}}{w}\n"
 
     return ass
 
@@ -257,9 +260,9 @@ def render_short(
         scale_h_meme = make_even(scale_h_meme)
 
     # Subtitles confined to the top Caption Bar (0 → 320px).
-    # ASS MarginV is measured from the BOTTOM of the 1920px canvas.
-    # To place text at y≈160 (centre of 320px bar): MarginV = 1920 - 160 = 1760
-    y_list = [1760, 1780, 1740, 1770, 1750]
+    # With \an8 (top-center), MarginV = pixel distance from the TOP edge.
+    # Centre of 320px bar ≈ 160px from top; vary ±20px for visual rhythm.
+    y_list = [140, 160, 180, 150, 170]
 
     # Cat clip aspect ratio
     car = 16 / 9
@@ -306,10 +309,13 @@ def render_short(
             f"[cat_frozen][cat_live]overlay=enable='gt(t,{freeze_dur})':eof_action=pass[cat_combined]"
         )
 
-        # 4. Scale cat to cover-fill Zone 3 (1080 × CAT_H), then crop to exact size
+        # 4. Letterbox/pillarbox cat into Zone 3 (1080 × CAT_H) — no cropping ever,
+        #    any aspect ratio is supported; black bars fill unused space.
         filter_chains.append(
-            f"[cat_combined]scale={1080}:{CAT_H}:force_original_aspect_ratio=increase,"
-            f"crop={1080}:{CAT_H}[cat_zone]"
+            f"[cat_combined]"
+            f"scale={1080}:{CAT_H}:force_original_aspect_ratio=decrease,"
+            f"pad={1080}:{CAT_H}:(ow-iw)/2:(oh-ih)/2:black"
+            f"[cat_zone]"
         )
 
         # 5. Scale meme to fit Zone 2 (preserve aspect ratio, no crop)
