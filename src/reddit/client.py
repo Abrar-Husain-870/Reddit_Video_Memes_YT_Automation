@@ -66,7 +66,7 @@ def save_processed_id(post_id: str) -> None:
 
 def _fetch_anonymous_json(subreddit: str, sort: str, time_filter: str) -> List[dict]:
     """Fetch subreddit posts using the public JSON API."""
-    url = f"https://www.reddit.com/r/{subreddit}/{sort}.json"
+    url = f"https://old.reddit.com/r/{subreddit}/{sort}.json"
     params = {}
     if sort == "top" and time_filter:
         params["t"] = time_filter
@@ -164,7 +164,7 @@ def _fetch_with_rss(subreddit: str) -> List[dict]:
         def get_text(self):
             return "".join(self.text)
 
-    url = f"https://www.reddit.com/r/{subreddit}/.rss"
+    url = f"https://old.reddit.com/r/{subreddit}/.rss"
     logger.info(f"Fetching posts from anonymous RSS feed: {url}")
     try:
         response = session_client.get(url, headers=DEFAULT_HEADERS, timeout=15)
@@ -202,21 +202,20 @@ def _fetch_with_rss(subreddit: str) -> List[dict]:
             selftext = extractor.get_text().strip()
             
             # Extract image URL from RSS HTML content.
-            # RSS structure: <a href="https://i.redd.it/xxx.jpeg">[link]</a>
-            #                <img src="https://preview.redd.it/xxx.jpeg?width=320&...">
-            # Priority: i.redd.it (direct, downloadable) > i.imgur.com > preview.redd.it (often 403)
+            # We ONLY want direct image URLs (i.redd.it or i.imgur.com) to guarantee high-quality memes
+            # and avoid 403 blocks from external preview URLs.
             image_url = ""
             valid_img_extensions = ('.jpg', '.jpeg', '.png', '.webp', '.gif')
             
-            # 1) Check <a> href tags first — these contain the real i.redd.it URLs
+            # 1) Check <a> href tags first — these contain the real direct URLs
             for href in extractor.link_hrefs:
-                href_lower = href.lower().split("?")[0]  # strip query params
+                href_lower = href.lower().split("?")[0]
                 if ("i.redd.it" in href_lower or "i.imgur.com" in href_lower):
                     if any(href_lower.endswith(ext) for ext in valid_img_extensions):
-                        image_url = href.split("?")[0]  # clean URL without query params
+                        image_url = href.split("?")[0]
                         break
             
-            # 2) Fallback: regex scan for i.redd.it or i.imgur.com direct links in raw HTML
+            # 2) Fallback: regex scan for direct links
             if not image_url:
                 direct_patterns = _re.findall(
                     r'https?://(?:i\.redd\.it|i\.imgur\.com)/[^\s"<>?]+?(?:\.jpg|\.jpeg|\.png|\.webp|\.gif)',
@@ -226,18 +225,10 @@ def _fetch_with_rss(subreddit: str) -> List[dict]:
                 if direct_patterns:
                     image_url = direct_patterns[0]
             
-            # 3) Last resort: use preview.redd.it thumbnail (may 403 but worth trying)
+            # If we couldn't find a direct image link, skip this post (memes must be direct images)
             if not image_url:
-                for img_src in extractor.images:
-                    img_clean = img_src.lower().split("?")[0]
-                    if any(img_clean.endswith(ext) for ext in valid_img_extensions):
-                        image_url = img_src.split("?")[0]
-                        break
-            
-            # Determine if this is an image post based on whether we found an image URL
-            is_self = not bool(image_url)
-            
-            # RSS has no score/comments. Fake values above config minimums to pass filters.
+                continue
+                
             posts.append({
                 "id": post_id_val,
                 "subreddit": subreddit,
@@ -246,7 +237,7 @@ def _fetch_with_rss(subreddit: str) -> List[dict]:
                 "score": config.REDDIT_MIN_SCORE + 100,
                 "num_comments": config.REDDIT_MIN_COMMENTS + 10,
                 "over_18": False,
-                "is_self": is_self,
+                "is_self": False,
                 "permalink": permalink,
                 "author": author,
                 "pinned": False,
