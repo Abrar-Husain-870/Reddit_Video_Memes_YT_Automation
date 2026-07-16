@@ -364,20 +364,15 @@ def get_random_reddit_post() -> Optional[RedditPost]:
         logger.error("No subreddits configured in config.SUBREDDITS")
         return None
         
-    random.shuffle(subreddits)
     processed_ids = load_processed_ids()
     
-    for i, sub in enumerate(subreddits):
-        if i > 0:
-            logger.info("Pausing for 5.0s to respect Reddit rate limits...")
-            time.sleep(5.0)
-            
-        logger.info(f"Searching subreddits for posts: r/{sub}")
-        posts = fetch_posts(sub, config.REDDIT_SORT, config.REDDIT_TIME_FILTER)
-        
-        if not posts:
-            continue
-            
+    # Combine subreddits using "+" to fetch all listings in a single HTTP request.
+    # This prevents triggering 429 Too Many Requests rate-limiting on cloud runners like GitHub Actions.
+    combined_subs = "+".join(subreddits)
+    logger.info(f"Searching subreddits for posts: r/{combined_subs}")
+    posts = fetch_posts(combined_subs, config.REDDIT_SORT, config.REDDIT_TIME_FILTER)
+    
+    if posts:
         random.shuffle(posts)
         for post in posts:
             filter_reason = filter_post(post, processed_ids)

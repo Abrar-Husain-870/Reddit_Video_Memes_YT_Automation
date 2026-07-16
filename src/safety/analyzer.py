@@ -103,20 +103,23 @@ class ContentSafetyAnalyzer:
 
     def _call_llm(self, system_prompt: str, user_prompt: str, image_path: Optional[Path] = None) -> str:
         """Call the configured LLM provider for content safety classification."""
-        provider = config.LLM_PROVIDER.lower()
-        model_name = config.LLM_MODEL
+        orig_provider = config.LLM_PROVIDER.lower()
+        orig_model_name = config.LLM_MODEL
         
         # If performing a vision check and Gemini key is configured, route to Gemini as it supports vision on the free tier
         if image_path and config.GEMINI_API_KEY:
             provider = "gemini"
             model_name = "gemini-1.5-flash"
+        else:
+            provider = orig_provider
+            model_name = orig_model_name
         
         try:
             return self._call_llm_internal(provider, model_name, system_prompt, user_prompt, image_path)
         except Exception as e:
             if image_path:
                 logger.warning(f"Safety check with image failed ({e}). Falling back to text-only safety scan.")
-                return self._call_llm_internal(provider, model_name, system_prompt, user_prompt, None)
+                return self._call_llm_internal(orig_provider, orig_model_name, system_prompt, user_prompt, None)
             else:
                 raise e
 
