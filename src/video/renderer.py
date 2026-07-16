@@ -319,7 +319,7 @@ def render_short(
         
         # 3. Stack Meme Box (top) and Cat Box (bottom)
         filter_chains.append(
-            f"[meme_box][cat_box]overlay=x=0:y={target_meme_h}[v_layout]"
+            f"[meme_box][cat_box]vstack=inputs=2[v_layout]"
         )
         last_v_tag = "v_layout"
         
