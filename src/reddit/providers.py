@@ -268,6 +268,13 @@ class RedditRSSProvider(BaseProvider):
                 if not media_url:
                     continue
                     
+                # If ONLY_VIDEOS is active, filter out image formats early
+                if getattr(config, "ONLY_VIDEOS", True):
+                    media_url_lower = media_url.lower().split("?")[0]
+                    is_image = media_url_lower.endswith(('.png', '.jpg', '.jpeg', '.webp', '.bmp', '.tiff')) or "i.redd.it" in media_url_lower or "preview.redd.it" in media_url_lower
+                    if is_image:
+                        continue
+                        
                 # Get subreddit name from permalink if possible
                 subreddit = "unknown"
                 sub_match = re.search(r'/r/([^/]+)/', permalink)
@@ -483,6 +490,13 @@ class RedditRSSProvider(BaseProvider):
                 if not media_url:
                     # Skip post if it doesn't contain any media
                     continue
+
+                # If ONLY_VIDEOS is active, filter out image formats early
+                if getattr(config, "ONLY_VIDEOS", True):
+                    media_url_lower = media_url.lower().split("?")[0]
+                    is_image = media_url_lower.endswith(('.png', '.jpg', '.jpeg', '.webp', '.bmp', '.tiff')) or "i.redd.it" in media_url_lower or "preview.redd.it" in media_url_lower
+                    if is_image:
+                        continue
 
                 posts.append(
                     RedditPost(
