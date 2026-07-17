@@ -127,42 +127,47 @@ class RedditRSSProvider(BaseProvider):
                     logger.warning(f"Failed to fetch/parse RSS feed {feed_url}: {e}")
                     
         # 2. Dynamic RSS Fallback: If no manual feeds are configured, or if manual feeds returned no posts,
-        # dynamically fetch RSS feeds for all configured subreddits via our public RSS JSON proxies.
+        # dynamically fetch RSS feeds for configured subreddits individually via our public RSS JSON proxies.
+        # Fetching individually prevents huge subreddits from drowning out smaller ones in the combined feed.
         if not posts:
             from src.reddit.client import get_headers
             import urllib.parse
+            import random
             
-            combined_subs = "+".join(subreddits)
-            logger.info(f"Fetching RSS feed for r/{combined_subs} dynamically via public RSS-to-JSON proxies")
+            shuffled_subs = list(subreddits)
+            random.shuffle(shuffled_subs)
             
-            encoded_url = urllib.parse.quote_plus(f"https://www.reddit.com/r/{combined_subs}/.rss")
-            proxies = [
-                ("feed2json", f"https://feed2json.org/convert?url={encoded_url}"),
-                ("rss2json", f"https://api.rss2json.com/v1/api.json?rss_url={encoded_url}")
-            ]
-            
-            success = False
-            for name, proxy_url in proxies:
-                logger.info(f"Attempting dynamic RSS fetch from proxy ({name}): {proxy_url}")
-                try:
-                    r = session_client.get(proxy_url, headers=get_headers(), timeout=15)
-                    r.raise_for_status()
-                    data = r.json()
+            for sub in shuffled_subs:
+                # Stop when we have gathered a healthy selection pool of candidate posts
+                if len(posts) >= 15:
+                    break
                     
-                    items = data.get("items", [])
-                    feed_posts = self._parse_rss_json_content(items, name)
-                    if feed_posts:
-                        logger.info(f"🎉 Successfully fetched {len(feed_posts)} posts from dynamic RSS proxy ({name})")
-                        posts.extend(feed_posts)
-                        success = True
-                        break
-                    else:
-                        logger.warning(f"RSS proxy ({name}) returned empty feed or parsed 0 posts.")
-                except Exception as e:
-                    logger.warning(f"Failed to fetch dynamic RSS from proxy ({name}): {e}")
-                    
-            if not success:
-                logger.error("All RSS proxies failed for dynamic RSS fetch.")
+                logger.info(f"Fetching RSS feed for r/{sub} dynamically via public RSS-to-JSON proxies")
+                encoded_url = urllib.parse.quote_plus(f"https://www.reddit.com/r/{sub}/.rss")
+                proxies = [
+                    ("feed2json", f"https://feed2json.org/convert?url={encoded_url}"),
+                    ("rss2json", f"https://api.rss2json.com/v1/api.json?rss_url={encoded_url}")
+                ]
+                
+                success = False
+                for name, proxy_url in proxies:
+                    try:
+                        r = session_client.get(proxy_url, headers=get_headers(), timeout=10)
+                        r.raise_for_status()
+                        data = r.json()
+                        
+                        items = data.get("items", [])
+                        feed_posts = self._parse_rss_json_content(items, name)
+                        if feed_posts:
+                            logger.info(f"🎉 Successfully fetched {len(feed_posts)} posts for r/{sub} from dynamic RSS proxy ({name})")
+                            posts.extend(feed_posts)
+                            success = True
+                            break
+                    except Exception as e:
+                        logger.debug(f"Failed to fetch dynamic RSS for r/{sub} from proxy ({name}): {e}")
+                        
+            if not posts:
+                logger.error("All dynamic RSS fetches failed or returned no posts.")
                 
         return posts
 
@@ -515,23 +520,43 @@ class RedditAnonymousProvider(BaseProvider):
             _fetch_anonymous_json,
             _fetch_with_rss
         )
+        import random
         
-        combined_subs = "+".join(subreddits)
-        logger.info(f"Fetching posts via Anonymous Fallbacks for r/{combined_subs}")
+        # Shuffle subreddits to ensure diversity and fair representation across runs
+        shuffled_subs = list(subreddits)
+        random.shuffle(shuffled_subs)
         
-        raw_posts = _fetch_with_redlib(combined_subs)
-        
-        if not raw_posts:
-            raw_posts = _fetch_anonymous_json(combined_subs, config.REDDIT_SORT, config.REDDIT_TIME_FILTER)
+        raw_posts = []
+        for sub in shuffled_subs:
+            # Stop when we have gathered a healthy selection pool of candidate posts
+            if len(raw_posts) >= 15:
+                break
+                
+            logger.info(f"Fetching posts via Anonymous Fallbacks for r/{sub}")
+            sub_raw = _fetch_with_redlib(sub)
             
-        if not raw_posts:
-            raw_posts = _fetch_with_rss(combined_subs)
+            if not sub_raw:
+                sub_raw = _fetch_anonymous_json(sub, config.REDDIT_SORT, config.REDDIT_TIME_FILTER)
+                
+            if not sub_raw:
+                sub_raw = _fetch_with_rss(sub)
+                
+            if sub_raw:
+                logger.info(f"🎉 Successfully fetched {len(sub_raw)} posts for r/{sub} via Anonymous Fallbacks")
+                raw_posts.extend(sub_raw)
             
         posts = []
         for rp in raw_posts:
+            # Handle post subreddit correctly if not returned in dict
+            sub_val = rp.get("subreddit", rp.get("subreddit_name_prefixed", ""))
+            if sub_val.startswith("r/"):
+                sub_val = sub_val[2:]
+            if not sub_val:
+                sub_val = rp.get("subreddit", "unknown")
+                
             post = RedditPost(
                 id=rp.get("id", ""),
-                subreddit=rp.get("subreddit", combined_subs),
+                subreddit=sub_val,
                 title=rp.get("title", ""),
                 selftext=rp.get("selftext", ""),
                 score=rp.get("score", 0),
