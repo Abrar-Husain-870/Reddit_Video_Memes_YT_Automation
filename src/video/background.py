@@ -137,6 +137,7 @@ def download_fresh_background() -> List[Path]:
     cmd = [
         "yt-dlp",
         "--format", config.YTDL_FORMAT,
+        "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "--output", output_tpl,
         "--max-downloads", "1",
         "--download-archive", str(config.CACHE_DIR / "background_archive.txt"),

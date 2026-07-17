@@ -641,6 +641,7 @@ def download_meme_video(url: str, post_id: Optional[str] = None) -> Path:
         cmd = [
             "yt-dlp",
             "--format", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+            "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "--output", str(out_path),
             "--no-playlist",
             "--quiet",
