@@ -84,17 +84,21 @@ def generate_optimized_metadata(
     if llm_title:
         title = clean_title(llm_title)
         
-    # If LLM title is missing or doesn't meet size requirements (40-70 chars preferred)
-    if not title or len(title) < 30 or len(title) > 85:
-        # Generate dynamic curiosity title based on subreddit/keywords
-        template = random.choice(TITLE_TEMPLATES)
-        sub_name = post.subreddit.replace("wholesomememes", "Wholesome").replace("tifu", "TIFU")
-        candidate = f"r/{sub_name} | {template}"
-        
-        if 40 <= len(candidate) <= 75:
-            title = candidate
-        else:
-            title = template
+    # If Curator Mode (video memes), the original post title is the best title.
+    if config.CURATOR_MODE:
+        title = clean_title(post.title)
+    else:
+        # If LLM title is missing or doesn't meet size requirements (40-70 chars preferred)
+        if not title or len(title) < 30 or len(title) > 85:
+            # Generate dynamic curiosity title based on subreddit/keywords
+            template = random.choice(TITLE_TEMPLATES)
+            sub_name = post.subreddit.replace("wholesomememes", "Wholesome").replace("tifu", "TIFU")
+            candidate = f"r/{sub_name} | {template}"
+            
+            if 40 <= len(candidate) <= 75:
+                title = candidate
+            else:
+                title = template
 
     # Enforce hard YouTube Title limit (100 chars max, cropped to 70 for Shorts optimal views)
     title = title[:75]

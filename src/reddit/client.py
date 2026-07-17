@@ -784,6 +784,102 @@ def download_meme_video(url: str, post_id: Optional[str] = None) -> Path:
                 video_id = vid_match.group(1)
 
         if video_id:
+            # First: Try Direct Reddit CDN (Fastly) Video + Audio download & merge.
+            # Fastly CDN does not block GitHub Actions, so we can download both video and audio directly.
+            logger.info(f"Attempting direct CDN (v.redd.it) download for Video ID: {video_id}")
+            temp_video_path = config.RAW_DIR / f"temp_video_{video_id}.mp4"
+            temp_audio_path = config.RAW_DIR / f"temp_audio_{video_id}.mp4"
+            
+            for p in (temp_video_path, temp_audio_path):
+                try:
+                    p.unlink(missing_ok=True)
+                except Exception:
+                    pass
+
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+                "Referer": "https://www.reddit.com/"
+            }
+
+            video_candidates = [
+                f"https://v.redd.it/{video_id}/CMAF_1080.mp4",
+                f"https://v.redd.it/{video_id}/CMAF_720.mp4",
+                f"https://v.redd.it/{video_id}/CMAF_480.mp4",
+                f"https://v.redd.it/{video_id}/CMAF_360.mp4",
+                f"https://v.redd.it/{video_id}/DASH_1080.mp4",
+                f"https://v.redd.it/{video_id}/DASH_720.mp4",
+                f"https://v.redd.it/{video_id}/DASH_480.mp4",
+                f"https://v.redd.it/{video_id}/DASH_360.mp4"
+            ]
+            audio_candidates = [
+                f"https://v.redd.it/{video_id}/CMAF_AUDIO_128.mp4",
+                f"https://v.redd.it/{video_id}/CMAF_AUDIO_64.mp4",
+                f"https://v.redd.it/{video_id}/DASH_audio.mp4",
+                f"https://v.redd.it/{video_id}/DASH_AUDIO.mp4",
+                f"https://v.redd.it/{video_id}/HLS_AUDIO_128.mp4",
+                f"https://v.redd.it/{video_id}/DASH_AUDIO_128.mp4"
+            ]
+
+            video_downloaded = False
+            for v_url in video_candidates:
+                try:
+                    r = requests.head(v_url, headers=headers, timeout=5)
+                    if r.status_code == 200:
+                        logger.info(f"Found direct video track: {v_url}. Downloading...")
+                        _direct_http_download(v_url, temp_video_path, extra_headers=headers)
+                        if temp_video_path.exists() and temp_video_path.stat().st_size > 50000:
+                            video_downloaded = True
+                            break
+                except Exception as e:
+                    logger.warning(f"Failed direct video download check for {v_url}: {e}")
+
+            audio_downloaded = False
+            if video_downloaded:
+                for a_url in audio_candidates:
+                    try:
+                        r = requests.head(a_url, headers=headers, timeout=5)
+                        if r.status_code == 200:
+                            logger.info(f"Found direct audio track: {a_url}. Downloading...")
+                            _direct_http_download(a_url, temp_audio_path, extra_headers=headers)
+                            if temp_audio_path.exists() and temp_audio_path.stat().st_size > 1000:
+                                audio_downloaded = True
+                                break
+                    except Exception as e:
+                        logger.warning(f"Failed direct audio download check for {a_url}: {e}")
+
+            if video_downloaded:
+                if audio_downloaded:
+                    import subprocess
+                    logger.info("Muxing video and audio tracks via FFmpeg...")
+                    cmd = ["ffmpeg", "-y", "-i", str(temp_video_path), "-i", str(temp_audio_path), "-c", "copy", str(out_path)]
+                    try:
+                        r = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, timeout=30)
+                        if r.returncode == 0 and out_path.exists() and out_path.stat().st_size > 50000:
+                            logger.info(f"Successfully downloaded and merged video+audio directly from Reddit CDN to {out_path}!")
+                            for p in (temp_video_path, temp_audio_path):
+                                p.unlink(missing_ok=True)
+                            return out_path
+                    except Exception as e:
+                        logger.error(f"FFmpeg direct merge failed: {e}")
+                else:
+                    # Video only (silent)
+                    try:
+                        import shutil
+                        shutil.copy2(temp_video_path, out_path)
+                        logger.info(f"Successfully downloaded video directly from Reddit CDN to {out_path} (silent video/no audio track found)")
+                        temp_video_path.unlink(missing_ok=True)
+                        return out_path
+                    except Exception as e:
+                        logger.error(f"Failed to use silent video path: {e}")
+
+            # Clean up temp files if direct CDN download was incomplete or failed
+            for p in (temp_video_path, temp_audio_path):
+                try:
+                    p.unlink(missing_ok=True)
+                except Exception:
+                    pass
+
+            # Fallback to Strategy 2 (Redlib proxy)
             instances = _get_redlib_instances(exclude_anubis=True)
             qualities = ["720", "1080", "480", "360"]
             orig_quality_match = re.search(r'/cmaf/(\d+)\.mp4', url)
@@ -799,15 +895,46 @@ def download_meme_video(url: str, post_id: Optional[str] = None) -> Path:
                     proxy_video_url = f"{instance}/vid/{video_id}/cmaf/{q}.mp4"
                     logger.info(f"Attempting proxy download from: {proxy_video_url}")
                     try:
-                        _direct_http_download(proxy_video_url, out_path)
-                        logger.info(f"Meme video successfully downloaded via proxy {instance} (quality {q}p) to {out_path}")
-                        return out_path
+                        temp_proxy_video = config.RAW_DIR / f"temp_proxy_video_{video_id}.mp4"
+                        _direct_http_download(proxy_video_url, temp_proxy_video)
+                        if temp_proxy_video.exists() and temp_proxy_video.stat().st_size > 50000:
+                            logger.info(f"Proxy video downloaded. Now trying to retrieve audio track directly...")
+                            temp_audio_path = config.RAW_DIR / f"temp_audio_{video_id}.mp4"
+                            audio_downloaded = False
+                            for a_url in audio_candidates:
+                                try:
+                                    r = requests.head(a_url, headers=headers, timeout=5)
+                                    if r.status_code == 200:
+                                        _direct_http_download(a_url, temp_audio_path, extra_headers=headers)
+                                        if temp_audio_path.exists() and temp_audio_path.stat().st_size > 1000:
+                                            audio_downloaded = True
+                                            break
+                                except Exception:
+                                    pass
+
+                            if audio_downloaded:
+                                import subprocess
+                                logger.info("Muxing proxy video and direct audio via FFmpeg...")
+                                cmd = ["ffmpeg", "-y", "-i", str(temp_proxy_video), "-i", str(temp_audio_path), "-c", "copy", str(out_path)]
+                                r = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, timeout=30)
+                                for p in (temp_proxy_video, temp_audio_path):
+                                    p.unlink(missing_ok=True)
+                                if r.returncode == 0 and out_path.exists() and out_path.stat().st_size > 50000:
+                                    logger.info(f"Meme video with audio successfully downloaded and merged via proxy to {out_path}")
+                                    return out_path
+                            else:
+                                import shutil
+                                shutil.copy2(temp_proxy_video, out_path)
+                                temp_proxy_video.unlink(missing_ok=True)
+                                logger.info(f"Meme video successfully downloaded via proxy (no audio found/silent) to {out_path}")
+                                return out_path
                     except Exception as e:
                         logger.warning(f"Proxy download failed for {proxy_video_url}: {e}")
-                        try:
-                            out_path.unlink(missing_ok=True)
-                        except Exception:
-                            pass
+                        for p in (config.RAW_DIR / f"temp_proxy_video_{video_id}.mp4", config.RAW_DIR / f"temp_audio_{video_id}.mp4"):
+                            try:
+                                p.unlink(missing_ok=True)
+                            except Exception:
+                                pass
 
     # ── STRATEGY 3: yt-dlp with --impersonate chrome (fallback for local runs) ──
     if post_id or is_vredd or is_proxy:
