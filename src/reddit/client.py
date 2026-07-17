@@ -125,27 +125,55 @@ def _fetch_anonymous_json(subreddit: str, sort: str, time_filter: str) -> List[d
         return []
 
 
-def _fetch_with_praw(subreddit: str, sort: str, time_filter: str) -> List[dict]:
-    """Fetch posts using PRAW (Python Reddit API Wrapper) if credentials are provided."""
+# Module-level cache so we only build the Reddit client once per run
+_praw_reddit_instance = None
+
+
+def _get_praw_reddit():
+    """Return a cached PRAW Reddit instance (app-only OAuth)."""
+    global _praw_reddit_instance
+    if _praw_reddit_instance is not None:
+        return _praw_reddit_instance
     try:
         import praw
     except ImportError:
-        logger.debug("PRAW is not installed. Falling back to public JSON feeds.")
-        return []
-
+        return None
     if not (config.REDDIT_CLIENT_ID and config.REDDIT_CLIENT_SECRET):
-        logger.debug("Reddit API credentials not fully set. Falling back to public JSON feeds.")
+        return None
+    _praw_reddit_instance = praw.Reddit(
+        client_id=config.REDDIT_CLIENT_ID,
+        client_secret=config.REDDIT_CLIENT_SECRET,
+        user_agent=config.REDDIT_USER_AGENT,
+    )
+    return _praw_reddit_instance
+
+
+def _get_reddit_bearer_token() -> str:
+    """Return the current OAuth Bearer token from PRAW (triggers token refresh if needed)."""
+    reddit = _get_praw_reddit()
+    if reddit is None:
+        return ""
+    try:
+        # Accessing .me() on an app-only instance forces token generation without user login
+        # We just need the token; ignore the response
+        _ = reddit.auth.limits  # lightweight property access that triggers token fetch
+        token = reddit._core._authorizer.access_token
+        return token or ""
+    except Exception:
+        return ""
+
+
+def _fetch_with_praw(subreddit: str, sort: str, time_filter: str) -> List[dict]:
+    """Fetch posts using PRAW (Python Reddit API Wrapper) if credentials are provided."""
+    reddit = _get_praw_reddit()
+    if reddit is None:
+        logger.debug("PRAW unavailable or credentials not set. Falling back to public feeds.")
         return []
 
     logger.info(f"Fetching posts via PRAW for r/{subreddit} (sort: {sort}, time: {time_filter})")
     try:
-        reddit = praw.Reddit(
-            client_id=config.REDDIT_CLIENT_ID,
-            client_secret=config.REDDIT_CLIENT_SECRET,
-            user_agent=config.REDDIT_USER_AGENT
-        )
         sub = reddit.subreddit(subreddit)
-        
+
         # Resolve sorting
         if sort == "top":
             feed = sub.top(time_filter=time_filter, limit=50)
@@ -155,9 +183,20 @@ def _fetch_with_praw(subreddit: str, sort: str, time_filter: str) -> List[dict]:
             feed = sub.rising(limit=50)
         else:
             feed = sub.hot(limit=50)
-            
+
         posts = []
         for post in feed:
+            # Extract real v.redd.it fallback_url when available — this is the key
+            # that lets us download the video with OAuth auth instead of a browser.
+            media_url = getattr(post, "url", "")
+            reddit_video = None
+            raw_media = getattr(post, "media", None) or {}
+            if isinstance(raw_media, dict) and "reddit_video" in raw_media:
+                reddit_video = raw_media["reddit_video"]
+                # Prefer fallback_url (plain MP4) over dash_url (requires DASH muxing)
+                fallback = reddit_video.get("fallback_url", "")
+                if fallback:
+                    media_url = fallback
             posts.append({
                 "id": post.id,
                 "subreddit": post.subreddit.display_name,
@@ -171,7 +210,7 @@ def _fetch_with_praw(subreddit: str, sort: str, time_filter: str) -> List[dict]:
                 "author": post.author.name if post.author else "[deleted]",
                 "pinned": getattr(post, "pinned", False),
                 "crosspost_parent": getattr(post, "crosspost_parent", None),
-                "url": getattr(post, "url", "")
+                "url": media_url,
             })
         return posts
     except Exception as e:
@@ -614,88 +653,141 @@ def download_meme_image(url: str) -> Path:
     logger.info(f"Meme image successfully saved to {out_path} ({len(response.content)} bytes)")
     return out_path
 def download_meme_video(url: str, post_id: Optional[str] = None) -> Path:
-    """Downloads the meme video from the given URL and saves it to raw directory."""
+    """Downloads the meme video from the given URL and saves it to raw directory.
+
+    Download strategy (in order of preference):
+    1. v.redd.it URL + Reddit OAuth Bearer token → authenticated direct HTTP download.
+       This is the most reliable method and requires REDDIT_CLIENT_ID/SECRET in .env.
+    2. Redlib/safereddit proxy CMAF URL → unauthenticated direct HTTP download.
+    3. yt-dlp as a last-resort fallback (non-Reddit external URLs).
+
+    We deliberately NEVER reconstruct a www.reddit.com/comments/ URL because
+    Reddit's API now requires account authentication that yt-dlp cannot provide
+    in headless CI environments without a browser.
+    """
     logger.info(f"Downloading meme video from URL: {url}")
-    
+
     # Ensure RAW_DIR exists
     config.RAW_DIR.mkdir(parents=True, exist_ok=True)
-    # Reconstruct official Reddit URL to let yt-dlp download high-quality feeds directly
-    # and bypass Cloudflare/scraping restrictions on Redlib proxies
-    is_reddit_or_proxy = ("v.redd.it" in url.lower() or "reddit.com" in url.lower() or "safereddit.com" in url.lower())
-    if post_id and is_reddit_or_proxy:
-        url = f"https://www.reddit.com/comments/{post_id}"
-        is_reddit_hosted = True
-    else:
-        is_reddit_hosted = ("v.redd.it" in url.lower() or "reddit.com" in url.lower()) and "safereddit.com" not in url.lower()
-        
-    if is_reddit_hosted:
-        import subprocess
-        out_path = config.RAW_DIR / "meme_video.mp4"
-        logger.info(f"Reddit-hosted video detected. Downloading via yt-dlp: {url}")
-        
-        # Clean up any pre-existing files to prevent collisions
-        out_path.unlink(missing_ok=True)
-        mkv_path = out_path.with_suffix(".mkv")
-        mkv_path.unlink(missing_ok=True)
-        
-        cmd = [
-            "yt-dlp",
-            "--format", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
-            "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "--output", str(out_path),
-            "--no-playlist",
-            "--quiet",
-            url
-        ]
-        
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-        if result.returncode != 0:
-            logger.error(f"yt-dlp download failed: {result.stderr}")
-            raise Exception(f"yt-dlp download failed: {result.stderr}")
-            
-        # Verify and return file path
-        if out_path.exists():
-            logger.info(f"Meme video successfully downloaded via yt-dlp to {out_path}")
-            return out_path
-        elif mkv_path.exists():
-            mkv_path.rename(out_path)
-            logger.info(f"Meme video downloaded via yt-dlp as mkv, renamed to {out_path.name}")
-            return out_path
-        else:
-            # Fallback search in RAW_DIR for any file starting with meme_video
-            downloaded = list(config.RAW_DIR.glob("meme_video.*"))
-            if downloaded:
-                downloaded[0].rename(out_path)
-                logger.info(f"Meme video found as {downloaded[0].name}, renamed to {out_path.name}")
-                return out_path
-            raise FileNotFoundError("yt-dlp did not produce the expected output file.")
-    else:
-        # Standard direct download
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
-            "Accept": "*/*",
-            "Referer": "https://www.reddit.com/",
-            "Accept-Language": "en-US,en;q=0.9",
-        }
-        response = requests.get(url, headers=headers, timeout=60, stream=True)
-        response.raise_for_status()
-        
-        # Determine file extension from URL
-        from urllib.parse import urlparse
-        parsed = urlparse(url)
-        ext = Path(parsed.path).suffix.lower()
-        if ext not in ('.mp4', '.webm', '.gif'):
-            ext = '.mp4'
-            
-        out_path = config.RAW_DIR / f"meme_video{ext}"
-        with open(out_path, "wb") as f:
-            for chunk in response.iter_content(chunk_size=8192):
-                if chunk:
-                    f.write(chunk)
-                    
-        logger.info(f"Meme video successfully saved to {out_path}")
-        return out_path
+    out_path = config.RAW_DIR / "meme_video.mp4"
 
+    # Clean up any pre-existing files to prevent collisions
+    out_path.unlink(missing_ok=True)
+    for old in config.RAW_DIR.glob("meme_video.*"):
+        old.unlink(missing_ok=True)
+
+    is_vredd = "v.redd.it" in url.lower()
+    is_proxy = "safereddit.com" in url.lower() or "redlib." in url.lower()
+
+    # ── STRATEGY 1: v.redd.it + OAuth Bearer token ────────────────────────────
+    # When PRAW credentials are configured, get the OAuth token and use it to
+    # authenticate the v.redd.it CDN request. This bypasses all bot-protection.
+    if is_vredd:
+        bearer = _get_reddit_bearer_token()
+        if bearer:
+            logger.info(f"v.redd.it URL + OAuth Bearer token — authenticated download: {url}")
+            try:
+                extra_headers = {
+                    "Authorization": f"Bearer {bearer}",
+                    "User-Agent": config.REDDIT_USER_AGENT,
+                }
+                _direct_http_download(url, out_path, extra_headers=extra_headers)
+                logger.info(f"Meme video successfully downloaded (authenticated) to {out_path}")
+                return out_path
+            except Exception as e:
+                logger.warning(f"Authenticated v.redd.it download failed ({e}). Trying unauthenticated...")
+        # Unauthenticated fallback (may 403, but worth trying)
+        try:
+            _direct_http_download(url, out_path)
+            logger.info(f"Meme video downloaded (unauthenticated) to {out_path}")
+            return out_path
+        except Exception as e:
+            raise Exception(f"v.redd.it download failed (no credentials configured): {e}") from e
+
+    # ── STRATEGY 2: Redlib/safereddit proxy URL ───────────────────────────────
+    # Safereddit's /vid/ URLs serve the video via their own CDN after a
+    # browser-verification challenge. We try a direct HTTP download; if the
+    # server returns HTML (bot-protection), we fall through to yt-dlp.
+    if is_proxy:
+        logger.info(f"Proxy video URL detected. Attempting direct HTTP download: {url}")
+        try:
+            _direct_http_download(url, out_path)
+            logger.info(f"Meme video successfully downloaded via direct HTTP to {out_path}")
+            return out_path
+        except Exception as e:
+            logger.warning(f"Direct HTTP download failed ({e}). Trying yt-dlp with proxy URL...")
+        try:
+            _ytdlp_generic_download(url, out_path)
+            logger.info(f"Meme video successfully downloaded via yt-dlp (generic) to {out_path}")
+            return out_path
+        except Exception as e:
+            raise Exception(f"All download strategies failed for proxy URL: {url}") from e
+
+    # ── STRATEGY 3: External (non-Reddit/proxy) video URLs ───────────────────
+    logger.info(f"External video URL detected. Downloading via yt-dlp: {url}")
+    _ytdlp_generic_download(url, out_path)
+    logger.info(f"Meme video successfully downloaded via yt-dlp to {out_path}")
+    return out_path
+
+
+def _direct_http_download(
+    url: str,
+    out_path: Path,
+    timeout: int = 90,
+    extra_headers: Optional[dict] = None,
+) -> None:
+    """Stream-download a video file over plain HTTP."""
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+        "Accept": "*/*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "https://www.reddit.com/",
+    }
+    if extra_headers:
+        headers.update(extra_headers)
+
+    response = requests.get(url, headers=headers, timeout=timeout, stream=True)
+    response.raise_for_status()
+
+    content_type = response.headers.get("Content-Type", "")
+    if "text/html" in content_type:
+        raise Exception(f"Server returned HTML instead of video (Content-Type: {content_type})")
+
+    total = 0
+    with open(out_path, "wb") as f:
+        for chunk in response.iter_content(chunk_size=65536):
+            if chunk:
+                f.write(chunk)
+                total += len(chunk)
+
+    if total < 50_000:
+        out_path.unlink(missing_ok=True)
+        raise Exception(f"Downloaded file is too small ({total} bytes) – probably not a valid video")
+
+
+def _ytdlp_generic_download(url: str, out_path: Path, timeout: int = 120) -> None:
+    """Download a video URL via yt-dlp without invoking the Reddit extractor."""
+    import subprocess
+    cmd = [
+        "yt-dlp",
+        "--format", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+        "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+        "--output", str(out_path),
+        "--no-playlist",
+        "--quiet",
+        "--no-warnings",
+        url,
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    if result.returncode != 0:
+        raise Exception(f"yt-dlp failed: {result.stderr.strip()}")
+
+    if not out_path.exists():
+        candidates = list(out_path.parent.glob("meme_video.*"))
+        if candidates:
+            candidates[0].rename(out_path)
+        else:
+            raise FileNotFoundError("yt-dlp did not produce the expected output file.")
 
 
 
