@@ -33,6 +33,49 @@ def get_headers() -> dict:
     }
 
 
+_cached_redlib_instances = []
+
+def _get_redlib_instances(exclude_anubis: bool = False) -> List[str]:
+    """Get list of active public Redlib instances, cached at module level."""
+    global _cached_redlib_instances
+    if not _cached_redlib_instances:
+        logger.info("Fetching public Redlib instances list...")
+        instances = []
+        try:
+            r = requests.get("https://raw.githubusercontent.com/redlib-org/redlib-instances/main/instances.json", timeout=8)
+            data = r.json()
+            for inst in data.get("instances", []):
+                url = inst.get("url")
+                if url:
+                    # Filter out Cloudflare instances (more likely to have bot challenges)
+                    if inst.get("cloudflare", False):
+                        continue
+                    instances.append(url.rstrip("/"))
+        except Exception as e:
+            logger.warning(f"Failed to fetch public Redlib instances JSON: {e}")
+
+        # Curated fallbacks that are historically reliable
+        fallbacks = [
+            "https://safereddit.com",
+            "https://redlib.catsarch.com",
+            "https://redlib.privacyredirect.com",
+            "https://redlib.slipfox.xyz",
+            "https://redlib.reallyaweso.me",
+            "https://redlib.private.coffee",
+            "https://redlib.perennialte.ch",
+        ]
+        for fb in fallbacks:
+            if fb not in instances:
+                instances.append(fb)
+
+        _cached_redlib_instances = instances
+        logger.info(f"Loaded {len(_cached_redlib_instances)} Redlib proxy instances.")
+    
+    if exclude_anubis:
+        return [inst for inst in _cached_redlib_instances if "safereddit.com" not in inst]
+    return _cached_redlib_instances
+
+
 
 def load_processed_ids() -> Set[str]:
     """Load the set of already processed and rejected Reddit post IDs."""
@@ -433,110 +476,127 @@ def _fetch_with_rss2json(subreddit: str) -> List[dict]:
 
 
 def _fetch_with_redlib(subreddit: str) -> List[dict]:
-    """Fetch posts using a public Redlib proxy instance (safereddit.com) without API keys."""
-    url = f"https://safereddit.com/r/{subreddit}"
-    logger.info(f"Fetching posts from Redlib instance: {url}")
-    try:
-        headers = {"User-Agent": "RedditShortsCuratorBot/1.0.0 (by /u/husai)"}
-        response = requests.get(url, headers=headers, timeout=15)
-        response.raise_for_status()
-        response.encoding = "utf-8"
-        
-        html_content = response.text
-        # Split using a regex to only match class="post" or class="post stickied"
-        # This avoids splitting on post_media_content, post_score, post_body, etc.
-        import re
-        post_blocks = re.split(r'<div class="post(?: stickied)?"', html_content)[1:]
-        
-        posts = []
-        for block in post_blocks:
-            # Extract ID
-            id_match = re.search(r'id="([^"]+)"', block)
-            if not id_match:
-                continue
-            post_id = id_match.group(1)
+    """Fetch posts using public Redlib proxy instances without API keys."""
+    instances = _get_redlib_instances(exclude_anubis=False)
+    # Prioritize safereddit.com as it is historically the most stable for scraping listings
+    instances = sorted(instances, key=lambda x: "safereddit.com" not in x)
+    
+    # Try up to 8 instances
+    for instance in instances[:8]:
+        url = f"{instance}/r/{subreddit}"
+        logger.info(f"Fetching posts from Redlib instance: {url}")
+        try:
+            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"}
+            response = requests.get(url, headers=headers, timeout=12)
+            response.raise_for_status()
+            response.encoding = "utf-8"
             
-            # Extract Title (ignoring flairs)
-            title = "FAILED"
-            h2_match = re.search(r'<h2 class="post_title">(.*?)</h2>', block, re.DOTALL)
-            if h2_match:
-                h2_content = h2_match.group(1)
-                # Find <a> tags that are not flairs
-                for a_match in re.finditer(r'<a\s+href="([^"]+)"[^>]*>(.*?)</a>', h2_content, re.DOTALL):
-                    tag_html = a_match.group(0)
-                    tag_text = a_match.group(2)
-                    if "class=\"post_flair\"" not in tag_html and "class='post_flair'" not in tag_html:
-                        import html
-                        title = html.unescape(re.sub(r'<[^>]*>', '', tag_text).strip())
-                        break
-            if title == "FAILED":
-                continue
+            html_content = response.text
             
-            # Extract Author
-            author_match = re.search(r'<a class="post_author[^"]*" href="/u/([^"]+)">', block)
-            author = author_match.group(1) if author_match else "[deleted]"
-            
-            # Extract Score
-            score_match = re.search(r'<div class="post_score"[^>]*>\s*(.*?)\s*<span class="label">', block, re.DOTALL)
-            score = 0
-            if score_match:
-                score_str = score_match.group(1).strip().lower()
-                try:
-                    if 'k' in score_str:
-                        score = int(float(score_str.replace('k', '')) * 1000)
-                    else:
-                        score = int(score_str)
-                except ValueError:
-                    score = 1000
-                    
-            # Extract Comments Count
-            comments_match = re.search(r'class="post_comments"[^>]*>\s*(.*?)\s*comments\s*</a>', block, re.DOTALL)
-            num_comments = 0
-            if comments_match:
-                comments_str = comments_match.group(1).strip().lower()
-                try:
-                    if 'k' in comments_str:
-                        num_comments = int(float(comments_str.replace('k', '')) * 1000)
-                    else:
-                        num_comments = int(comments_str)
-                except ValueError:
-                    num_comments = 100
-            
-            # Extract Media Link (Video sources)
-            media_url = ""
-            video_match = re.search(r'<source src="(/vid/[^"]+)" type="video/mp4"', block)
-            if video_match:
-                media_url = "https://safereddit.com" + video_match.group(1)
-            else:
-                image_match = re.search(r'<a class="post_media_lightbox" href="([^"]+)"', block)
-                if image_match:
-                    media_url = image_match.group(1)
-                    if media_url.startswith("/"):
-                        media_url = "https://safereddit.com" + media_url
-                        
-            if not media_url:
+            # If the instance returned an error or challenge, skip it
+            if "anubis" in html_content.lower() or "challenge" in html_content.lower() or "verifying your browser" in html_content.lower():
+                logger.warning(f"Redlib instance {instance} returned a verification challenge. Trying next...")
                 continue
                 
-            posts.append({
-                "id": post_id,
-                "subreddit": subreddit,
-                "title": title,
-                "selftext": "",
-                "score": score,
-                "num_comments": num_comments,
-                "over_18": False,
-                "is_self": False,
-                "permalink": f"/r/{subreddit}/comments/{post_id}",
-                "author": author,
-                "pinned": False,
-                "crosspost_parent": None,
-                "url": media_url
-            })
-        logger.info(f"Successfully scraped {len(posts)} posts from Redlib.")
-        return posts
-    except Exception as e:
-        logger.warning(f"Redlib fetch failed for r/{subreddit}: {e}")
-        return []
+            import re
+            post_blocks = re.split(r'<div class="post(?: stickied)?"', html_content)[1:]
+            if not post_blocks:
+                logger.warning(f"Redlib instance {instance} returned no post blocks. Trying next...")
+                continue
+            
+            posts = []
+            for block in post_blocks:
+                # Extract ID
+                id_match = re.search(r'id="([^"]+)"', block)
+                if not id_match:
+                    continue
+                post_id = id_match.group(1)
+                
+                # Extract Title (ignoring flairs)
+                title = "FAILED"
+                h2_match = re.search(r'<h2 class="post_title">(.*?)</h2>', block, re.DOTALL)
+                if h2_match:
+                    h2_content = h2_match.group(1)
+                    # Find <a> tags that are not flairs
+                    for a_match in re.finditer(r'<a\s+href="([^"]+)"[^>]*>(.*?)</a>', h2_content, re.DOTALL):
+                        tag_html = a_match.group(0)
+                        tag_text = a_match.group(2)
+                        if "class=\"post_flair\"" not in tag_html and "class='post_flair'" not in tag_html:
+                            import html
+                            title = html.unescape(re.sub(r'<[^>]*>', '', tag_text).strip())
+                            break
+                if title == "FAILED":
+                    continue
+                
+                # Extract Author
+                author_match = re.search(r'<a class="post_author[^"]*" href="/u/([^"]+)">', block)
+                author = author_match.group(1) if author_match else "[deleted]"
+                
+                # Extract Score
+                score_match = re.search(r'<div class="post_score"[^>]*>\s*(.*?)\s*<span class="label">', block, re.DOTALL)
+                score = 0
+                if score_match:
+                    score_str = score_match.group(1).strip().lower()
+                    try:
+                        if 'k' in score_str:
+                            score = int(float(score_str.replace('k', '')) * 1000)
+                        else:
+                            score = int(score_str)
+                    except ValueError:
+                        score = 1000
+                        
+                # Extract Comments Count
+                comments_match = re.search(r'class="post_comments"[^>]*>\s*(.*?)\s*comments\s*</a>', block, re.DOTALL)
+                num_comments = 0
+                if comments_match:
+                    comments_str = comments_match.group(1).strip().lower()
+                    try:
+                        if 'k' in comments_str:
+                            num_comments = int(float(comments_str.replace('k', '')) * 1000)
+                        else:
+                            num_comments = int(comments_str)
+                    except ValueError:
+                        num_comments = 100
+                
+                # Extract Media Link (Video sources)
+                media_url = ""
+                video_match = re.search(r'<source src="(/vid/[^"]+)" type="video/mp4"', block)
+                if video_match:
+                    media_url = instance + video_match.group(1)
+                else:
+                    image_match = re.search(r'<a class="post_media_lightbox" href="([^"]+)"', block)
+                    if image_match:
+                        media_url = image_match.group(1)
+                        if media_url.startswith("/"):
+                            media_url = instance + media_url
+                            
+                if not media_url:
+                    continue
+                    
+                posts.append({
+                    "id": post_id,
+                    "subreddit": subreddit,
+                    "title": title,
+                    "selftext": "",
+                    "score": score,
+                    "num_comments": num_comments,
+                    "over_18": False,
+                    "is_self": False,
+                    "permalink": f"/r/{subreddit}/comments/{post_id}",
+                    "author": author,
+                    "pinned": False,
+                    "crosspost_parent": None,
+                    "url": media_url
+                })
+            
+            if posts:
+                logger.info(f"Successfully scraped {len(posts)} posts from Redlib instance {instance}.")
+                return posts
+        except Exception as e:
+            logger.warning(f"Redlib fetch failed for instance {instance}: {e}")
+            
+    logger.warning(f"All Redlib instances failed to fetch posts for r/{subreddit}.")
+    return []
 
 
 def fetch_posts(subreddit: str, sort: str = "top", time_filter: str = "week") -> List[RedditPost]:
@@ -603,7 +663,7 @@ def filter_post(post: RedditPost, processed_ids: Set[str]) -> Optional[str]:
         
     from urllib.parse import urlparse
     parsed = urlparse(post.media_url.lower())
-    is_reddit_hosted = "v.redd.it" in post.media_url.lower() or "reddit.com" in post.media_url.lower() or "safereddit.com" in post.media_url.lower()
+    is_reddit_hosted = "v.redd.it" in post.media_url.lower() or "reddit.com" in post.media_url.lower() or "/vid/" in post.media_url.lower() or "safereddit.com" in post.media_url.lower() or "redlib" in post.media_url.lower()
     
     if config.ONLY_REDDIT_HOSTED and not is_reddit_hosted:
         return "Not a Reddit-hosted video"
@@ -656,11 +716,10 @@ def download_meme_video(url: str, post_id: Optional[str] = None) -> Path:
     """Downloads the meme video from the given URL and saves it to raw directory.
 
     Download strategy (in order of preference):
-    1. yt-dlp with --impersonate chrome via the official reddit.com/comments URL.
-       Uses curl-cffi TLS fingerprinting to bypass Reddit's bot detection — the
-       official yt-dlp solution. No API keys or cookies needed.
-    2. Authenticated download via Reddit OAuth Bearer token (if credentials set).
-    3. Direct HTTP download from Redlib proxy URL as last resort.
+    1. Direct download via rotated Redlib proxy servers (credential-free, bypasses CI/GitHub Actions IP blocks).
+    2. yt-dlp with --impersonate chrome (fallback for local runs).
+    3. Authenticated download via Reddit OAuth Bearer token (if credentials set).
+    4. Direct HTTP download from proxy URL as a fallback.
     """
     logger.info(f"Downloading meme video from URL: {url}")
 
@@ -674,27 +733,62 @@ def download_meme_video(url: str, post_id: Optional[str] = None) -> Path:
         old.unlink(missing_ok=True)
 
     is_vredd = "v.redd.it" in url.lower()
-    is_proxy = "safereddit.com" in url.lower() or "redlib." in url.lower()
+    is_proxy = "/vid/" in url.lower() or "safereddit.com" in url.lower() or "redlib" in url.lower()
 
-    # ── STRATEGY 1: yt-dlp with --impersonate chrome (no credentials needed) ──
-    # curl-cffi spoofs the TLS fingerprint so Reddit can't tell it's a bot.
-    # We always prefer the canonical reddit.com/comments URL for best quality.
-    # If post_id is available, use it; otherwise try the URL as-is.
+    # ── STRATEGY 1: Rotated Proxy Download for Reddit Video ──
+    # If it is a Reddit video, we can download the video directly from our rotated list of working Redlib instances.
+    # This bypasses the GitHub Actions IP block and doesn't require any API credentials/cookies.
+    if is_proxy or is_vredd or post_id:
+        video_id = None
+        import re
+        if "/vid/" in url:
+            vid_match = re.search(r'/vid/([^/]+)', url)
+            if vid_match:
+                video_id = vid_match.group(1)
+        elif "v.redd.it/" in url:
+            vid_match = re.search(r'v\.redd\.it/([^/?#]+)', url)
+            if vid_match:
+                video_id = vid_match.group(1)
+
+        if video_id:
+            instances = _get_redlib_instances(exclude_anubis=True)
+            qualities = ["720", "1080", "480", "360"]
+            orig_quality_match = re.search(r'/cmaf/(\d+)\.mp4', url)
+            if orig_quality_match:
+                orig_quality = orig_quality_match.group(1)
+                if orig_quality in qualities:
+                    qualities.remove(orig_quality)
+                qualities.insert(0, orig_quality)
+
+            logger.info(f"Attempting proxy download pool for Video ID: {video_id} using {len(instances)} instances")
+            for instance in instances[:10]:
+                for q in qualities:
+                    proxy_video_url = f"{instance}/vid/{video_id}/cmaf/{q}.mp4"
+                    logger.info(f"Attempting proxy download from: {proxy_video_url}")
+                    try:
+                        _direct_http_download(proxy_video_url, out_path)
+                        logger.info(f"Meme video successfully downloaded via proxy {instance} (quality {q}p) to {out_path}")
+                        return out_path
+                    except Exception as e:
+                        logger.warning(f"Proxy download failed for {proxy_video_url}: {e}")
+                        out_path.unlink(missing_ok=True)
+
+    # ── STRATEGY 2: yt-dlp with --impersonate chrome (fallback for local runs) ──
     if post_id or is_vredd or is_proxy:
         reddit_url = (
             f"https://www.reddit.com/comments/{post_id}"
             if post_id
-            else url  # v.redd.it or proxy URL passed directly
+            else url
         )
-        logger.info(f"Reddit-hosted video detected. Downloading via yt-dlp --impersonate: {reddit_url}")
+        logger.info(f"Fallback to yt-dlp impersonation: {reddit_url}")
         try:
             _ytdlp_impersonate_download(reddit_url, out_path)
-            logger.info(f"Meme video successfully downloaded (impersonation) to {out_path}")
+            logger.info(f"Meme video successfully downloaded (yt-dlp impersonation) to {out_path}")
             return out_path
         except Exception as e:
             logger.warning(f"yt-dlp impersonation download failed ({e}). Trying OAuth token...")
 
-    # ── STRATEGY 2: Reddit OAuth Bearer token (requires REDDIT_CLIENT_ID set) ──
+    # ── STRATEGY 3: Reddit OAuth Bearer token (requires REDDIT_CLIENT_ID set) ──
     if is_vredd:
         bearer = _get_reddit_bearer_token()
         if bearer:
@@ -711,22 +805,6 @@ def download_meme_video(url: str, post_id: Optional[str] = None) -> Path:
                 return out_path
             except Exception as e:
                 logger.warning(f"Authenticated download failed ({e}). Trying proxy fallback...")
-
-    # ── STRATEGY 3: Direct HTTP from proxy URL ───────────────────────────────
-    if is_proxy:
-        logger.info(f"Trying direct HTTP download from proxy: {url}")
-        try:
-            _direct_http_download(url, out_path)
-            logger.info(f"Meme video downloaded via direct HTTP to {out_path}")
-            return out_path
-        except Exception as e:
-            raise Exception(f"All download strategies failed for Reddit video (post_id={post_id}): {e}") from e
-
-    if is_vredd:
-        raise Exception(
-            f"v.redd.it download failed. Install curl-cffi (`pip install curl-cffi`) "
-            f"or set REDDIT_CLIENT_ID/SECRET in .env to enable authenticated downloads."
-        )
 
     # ── STRATEGY 4: External (non-Reddit) URLs — plain yt-dlp ───────────────
     logger.info(f"External video URL detected. Downloading via yt-dlp: {url}")
