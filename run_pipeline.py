@@ -159,11 +159,15 @@ def main() -> None:
             from src.video.renderer import _get_audio_duration
             try:
                 meme_video_path = download_meme_video(post.media_url, post.id)
-                try:
-                    meme_duration = _get_audio_duration(meme_video_path)
-                except Exception as ex:
-                    logger.warning(f"Could not read meme video duration: {ex}. Defaulting to 10 seconds.")
+                is_image = meme_video_path.suffix.lower() in ('.png', '.jpg', '.jpeg', '.webp', '.bmp', '.tiff')
+                if is_image:
                     meme_duration = 10.0
+                else:
+                    try:
+                        meme_duration = _get_audio_duration(meme_video_path)
+                    except Exception as ex:
+                        logger.warning(f"Could not read meme video duration: {ex}. Defaulting to 10 seconds.")
+                        meme_duration = 10.0
                 
                 # Enforce duration filters in Curator Mode
                 if config.CURATOR_MODE:
