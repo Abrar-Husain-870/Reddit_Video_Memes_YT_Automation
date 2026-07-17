@@ -646,13 +646,18 @@ def render_curator_short(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     temp_title_path = config.OUTPUT_DIR / "temp_title.txt"
     
-    try:
-        meme_dur = _get_audio_duration(meme_video_path)
-    except Exception as e:
-        logger.warning(f"Could not read meme video duration: {e}. Defaulting to 10 seconds.")
+    is_image = meme_video_path.suffix.lower() in ('.png', '.jpg', '.jpeg', '.webp', '.bmp', '.tiff')
+    if is_image:
         meme_dur = 10.0
+        mw, mh = _get_image_dimensions(meme_video_path)
+    else:
+        try:
+            meme_dur = _get_audio_duration(meme_video_path)
+        except Exception as e:
+            logger.warning(f"Could not read meme video duration: {e}. Defaulting to 10 seconds.")
+            meme_dur = 10.0
+        mw, mh = _get_video_dimensions(meme_video_path)
         
-    mw, mh = _get_video_dimensions(meme_video_path)
     meme_ar = mw / mh
     
     # Target duration (maximum of 59s)
