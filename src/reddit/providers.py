@@ -235,6 +235,9 @@ class RedditRSSProvider(BaseProvider):
                 # Check link hrefs first
                 for href in extractor.links:
                     href_lower = href.lower().split("?")[0]
+                    if "v.redd.it" in href_lower:
+                        media_url = href
+                        break
                     if ("i.redd.it" in href_lower or "i.imgur.com" in href_lower or "preview.redd.it" in href_lower):
                         if any(href_lower.endswith(ext) for ext in valid_media_extensions):
                             media_url = href.split("?")[0]
@@ -242,13 +245,20 @@ class RedditRSSProvider(BaseProvider):
                             
                 # Fallback: regex scan
                 if not media_url and desc_html:
-                    direct_patterns = re.findall(
-                        r'https?://(?:i\.redd\.it|i\.imgur\.com|preview\.redd\.it)/[^\s"<>?]+?(?:\.mp4|\.webm|\.gif|\.png|\.jpg|\.jpeg|\.webp)',
-                        desc_html,
-                        re.IGNORECASE
+                    vredd_patterns = re.findall(
+                        r'https?://v\.redd\.it/[a-zA-Z0-9]+',
+                        desc_html
                     )
-                    if direct_patterns:
-                        media_url = direct_patterns[0]
+                    if vredd_patterns:
+                        media_url = vredd_patterns[0]
+                    else:
+                        direct_patterns = re.findall(
+                            r'https?://(?:i\.redd\.it|i\.imgur\.com|preview\.redd\.it)/[^\s"<>?]+?(?:\.mp4|\.webm|\.gif|\.png|\.jpg|\.jpeg|\.webp)',
+                            desc_html,
+                            re.IGNORECASE
+                        )
+                        if direct_patterns:
+                            media_url = direct_patterns[0]
                         
                 if not media_url:
                     continue
@@ -433,24 +443,37 @@ class RedditRSSProvider(BaseProvider):
                 if not media_url:
                     if extractor.videos:
                         media_url = extractor.videos[0]
-                    elif extractor.images:
-                        media_url = extractor.images[0]
-                    elif extractor.links:
-                        # Find direct media links
+                    else:
                         for l in extractor.links:
-                            if l.lower().split("?")[0].endswith(('.mp4', '.webm', '.gif', '.png', '.jpg', '.jpeg', '.webp')):
+                            if "v.redd.it" in l.lower():
                                 media_url = l
                                 break
+                        if not media_url:
+                            if extractor.images:
+                                media_url = extractor.images[0]
+                            elif extractor.links:
+                                # Find direct media links
+                                for l in extractor.links:
+                                    if l.lower().split("?")[0].endswith(('.mp4', '.webm', '.gif', '.png', '.jpg', '.jpeg', '.webp')):
+                                        media_url = l
+                                        break
 
                 # Strategy D: Scan raw text/description using regex for direct media links
                 if not media_url and desc_html:
-                    direct_patterns = re.findall(
-                        r'https?://[^\s"<>]+?\.(?:mp4|webm|gif|png|jpg|jpeg|webp)',
-                        desc_html,
-                        re.IGNORECASE
+                    vredd_patterns = re.findall(
+                        r'https?://v\.redd\.it/[a-zA-Z0-9]+',
+                        desc_html
                     )
-                    if direct_patterns:
-                        media_url = direct_patterns[0]
+                    if vredd_patterns:
+                        media_url = vredd_patterns[0]
+                    else:
+                        direct_patterns = re.findall(
+                            r'https?://[^\s"<>]+?\.(?:mp4|webm|gif|png|jpg|jpeg|webp)',
+                            desc_html,
+                            re.IGNORECASE
+                        )
+                        if direct_patterns:
+                            media_url = direct_patterns[0]
 
                 if not media_url:
                     # Skip post if it doesn't contain any media

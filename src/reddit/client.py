@@ -331,19 +331,29 @@ def _fetch_with_rss(subreddit: str) -> List[dict]:
                     
                     for href in extractor.link_hrefs:
                         href_lower = href.lower().split("?")[0]
+                        if "v.redd.it" in href_lower:
+                            image_url = href
+                            break
                         if ("i.redd.it" in href_lower or "i.imgur.com" in href_lower or "preview.redd.it" in href_lower):
                             if any(href_lower.endswith(ext) for ext in valid_media_extensions):
                                 image_url = href.split("?")[0]
                                 break
                                 
                     if not image_url:
-                        direct_patterns = _re.findall(
-                            r'https?://(?:i\.redd\.it|i\.imgur\.com|preview\.redd\.it)/[^\s"<>?]+?(?:\.mp4|\.webm|\.gif|\.png|\.jpg|\.jpeg|\.webp)',
-                            html_content,
-                            _re.IGNORECASE
+                        vredd_patterns = _re.findall(
+                            r'https?://v\.redd\.it/[a-zA-Z0-9]+',
+                            html_content
                         )
-                        if direct_patterns:
-                            image_url = direct_patterns[0]
+                        if vredd_patterns:
+                            image_url = vredd_patterns[0]
+                        else:
+                            direct_patterns = _re.findall(
+                                r'https?://(?:i\.redd\.it|i\.imgur\.com|preview\.redd\.it)/[^\s"<>?]+?(?:\.mp4|\.webm|\.gif|\.png|\.jpg|\.jpeg|\.webp)',
+                                html_content,
+                                _re.IGNORECASE
+                            )
+                            if direct_patterns:
+                                image_url = direct_patterns[0]
                             
                     if not image_url:
                         continue
@@ -389,19 +399,29 @@ def _fetch_with_rss(subreddit: str) -> List[dict]:
                     
                     for href in extractor.link_hrefs:
                         href_lower = href.lower().split("?")[0]
+                        if "v.redd.it" in href_lower:
+                            image_url = href
+                            break
                         if ("i.redd.it" in href_lower or "i.imgur.com" in href_lower or "preview.redd.it" in href_lower):
                             if any(href_lower.endswith(ext) for ext in valid_media_extensions):
                                 image_url = href.split("?")[0]
                                 break
                                 
                     if not image_url:
-                        direct_patterns = _re.findall(
-                            r'https?://(?:i\.redd\.it|i\.imgur\.com|preview\.redd\.it)/[^\s"<>?]+?(?:\.mp4|\.webm|\.gif|\.png|\.jpg|\.jpeg|\.webp)',
-                            html_content,
-                            _re.IGNORECASE
+                        vredd_patterns = _re.findall(
+                            r'https?://v\.redd\.it/[a-zA-Z0-9]+',
+                            html_content
                         )
-                        if direct_patterns:
-                            image_url = direct_patterns[0]
+                        if vredd_patterns:
+                            image_url = vredd_patterns[0]
+                        else:
+                            direct_patterns = _re.findall(
+                                r'https?://(?:i\.redd\.it|i\.imgur\.com|preview\.redd\.it)/[^\s"<>?]+?(?:\.mp4|\.webm|\.gif|\.png|\.jpg|\.jpeg|\.webp)',
+                                html_content,
+                                _re.IGNORECASE
+                            )
+                            if direct_patterns:
+                                image_url = direct_patterns[0]
                             
                     if not image_url:
                         continue
