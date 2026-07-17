@@ -111,9 +111,12 @@ jobs:
           ELEVENLABS_VOICE_ID: ${{ secrets.ELEVENLABS_VOICE_ID }}
 
           # ── YouTube Upload ───────────────────────────────────────────────
-          YT_MEME_CLIENT_ID: ${{ secrets.YT_MEME_CLIENT_ID }}
-          YT_MEME_CLIENT_SECRET_VALUE: ${{ secrets.YT_MEME_CLIENT_SECRET_VALUE }}
-          YT_MEME_REFRESH_TOKEN: ${{ secrets.YT_MEME_REFRESH_TOKEN }}
+          YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID || secrets.YT_MEME_CLIENT_ID }}
+          YT_CLIENT_SECRET_VALUE: ${{ secrets.YT_CLIENT_SECRET_VALUE || secrets.YT_MEME_CLIENT_SECRET_VALUE }}
+          YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN || secrets.YT_MEME_REFRESH_TOKEN }}
+          YT_MEME_CLIENT_ID: ${{ secrets.YT_MEME_CLIENT_ID || secrets.YT_CLIENT_ID }}
+          YT_MEME_CLIENT_SECRET_VALUE: ${{ secrets.YT_MEME_CLIENT_SECRET_VALUE || secrets.YT_CLIENT_SECRET_VALUE }}
+          YT_MEME_REFRESH_TOKEN: ${{ secrets.YT_MEME_REFRESH_TOKEN || secrets.YT_REFRESH_TOKEN }}
 
           # ── Pipeline Settings (can also live in .env committed to repo) ──
           SUBREDDITS: ${{ secrets.SUBREDDITS }}
