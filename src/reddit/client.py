@@ -262,10 +262,10 @@ def _fetch_with_praw(subreddit: str, sort: str, time_filter: str) -> List[dict]:
 
 
 def _fetch_with_rss(subreddit: str) -> List[dict]:
-    """Fetch posts via public RSS feeds as a third fallback."""
-    import xml.etree.ElementTree as ET
+    """Fetch posts via public RSS feeds using public RSS-to-JSON API proxies as a fallback."""
     import html.parser
     import re as _re
+    import urllib.parse
     
     class HTMLTextExtractor(html.parser.HTMLParser):
         def __init__(self):
@@ -288,191 +288,148 @@ def _fetch_with_rss(subreddit: str) -> List[dict]:
         def get_text(self):
             return "".join(self.text)
 
-    url = f"https://old.reddit.com/r/{subreddit}/.rss"
-    logger.info(f"Fetching posts from anonymous RSS feed: {url}")
-    try:
-        response = session_client.get(url, headers=get_headers(), timeout=15)
-        response.raise_for_status()
-        if not response.content.strip():
-            logger.warning("Empty response from RSS feed")
-            return []
-            
-        root = ET.fromstring(response.content)
-        ns = {"atom": "http://www.w3.org/2005/Atom"}
-        
-        posts = []
-        for entry in root.findall("atom:entry", ns):
-            post_id = entry.find("atom:id", ns)
-            post_id_val = post_id.text if post_id is not None else ""
-            if post_id_val.startswith("t3_"):
-                post_id_val = post_id_val[3:]
-                
-            title_elem = entry.find("atom:title", ns)
-            title = title_elem.text if title_elem is not None else ""
-            
-            link_elem = entry.find("atom:link", ns)
-            permalink = link_elem.attrib.get("href", "") if link_elem is not None else ""
-            
-            author_elem = entry.find("atom:author/atom:name", ns)
-            author = author_elem.text if author_elem is not None else "[deleted]"
-            if author.startswith("/u/"):
-                author = author[3:]
-                
-            content_elem = entry.find("atom:content", ns)
-            html_content = content_elem.text if content_elem is not None else ""
-            
-            extractor = HTMLTextExtractor()
-            extractor.feed(html_content)
-            selftext = extractor.get_text().strip()
-            
-            # Extract video URL from RSS HTML content.
-            # We ONLY want direct video URLs (i.redd.it or i.imgur.com) to guarantee high-quality memes
-            # and avoid 403 blocks from external preview URLs.
-            image_url = ""
-            valid_video_extensions = ('.mp4', '.webm', '.gif')
-            
-            # 1) Check <a> href tags first — these contain the real direct URLs
-            for href in extractor.link_hrefs:
-                href_lower = href.lower().split("?")[0]
-                if ("i.redd.it" in href_lower or "i.imgur.com" in href_lower):
-                    if any(href_lower.endswith(ext) for ext in valid_video_extensions):
-                        image_url = href.split("?")[0]
-                        break
-            
-            # 2) Fallback: regex scan for direct links
-            if not image_url:
-                direct_patterns = _re.findall(
-                    r'https?://(?:i\.redd\.it|i\.imgur\.com)/[^\s"<>?]+?(?:\.mp4|\.webm|\.gif)',
-                    html_content,
-                    _re.IGNORECASE
-                )
-                if direct_patterns:
-                    image_url = direct_patterns[0]
-            
-            # If we couldn't find a direct video link, skip this post
-            if not image_url:
-                continue
-                
-            posts.append({
-                "id": post_id_val,
-                "subreddit": subreddit,
-                "title": title,
-                "selftext": selftext,
-                "score": config.REDDIT_MIN_SCORE + 100,
-                "num_comments": config.REDDIT_MIN_COMMENTS + 10,
-                "over_18": False,
-                "is_self": False,
-                "permalink": permalink,
-                "author": author,
-                "pinned": False,
-                "crosspost_parent": None,
-                "url": image_url
-            })
-        return posts
-    except Exception as e:
-        logger.warning(f"RSS feed fetch failed for r/{subreddit}: {e}")
-        return []
-
-
-def _fetch_with_rss2json(subreddit: str) -> List[dict]:
-    """Fetch posts using the free public rss2json.com API as a third-party proxy fallback."""
-    import html.parser
-    import re as _re
-    
-    class HTMLTextExtractor(html.parser.HTMLParser):
-        def __init__(self):
-            super().__init__()
-            self.text = []
-            self.images = []      # <img src="..."> URLs
-            self.link_hrefs = []  # <a href="..."> URLs
-        def handle_data(self, data):
-            self.text.append(data)
-        def handle_starttag(self, tag, attrs):
-            attrs_dict = dict(attrs)
-            if tag == "img":
-                src = attrs_dict.get("src", "")
-                if src:
-                    self.images.append(src)
-            elif tag == "a":
-                href = attrs_dict.get("href", "")
-                if href:
-                    self.link_hrefs.append(href)
-        def get_text(self):
-            return "".join(self.text)
-
-    # Encode the rss_url parameter properly
     rss_url = f"https://www.reddit.com/r/{subreddit}/.rss"
     encoded_url = urllib.parse.quote_plus(rss_url)
-    url = f"https://api.rss2json.com/v1/api.json?rss_url={encoded_url}"
-    logger.info(f"Fetching posts from rss2json proxy for r/{subreddit}")
-    try:
-        response = session_client.get(url, headers=get_headers(), timeout=15)
-        response.raise_for_status()
-        data = response.json()
-        
-        posts = []
-        for item in data.get("items", []):
-            post_id_val = item.get("guid", "")
-            if post_id_val.startswith("t3_"):
-                post_id_val = post_id_val[3:]
-                
-            title = item.get("title", "")
-            permalink = item.get("link", "")
+    
+    proxies = [
+        ("feed2json", f"https://feed2json.org/convert?url={encoded_url}"),
+        ("rss2json", f"https://api.rss2json.com/v1/api.json?rss_url={encoded_url}")
+    ]
+    
+    for name, proxy_url in proxies:
+        logger.info(f"Fetching posts from RSS proxy ({name}): {proxy_url}")
+        try:
+            response = session_client.get(proxy_url, headers=get_headers(), timeout=15)
+            response.raise_for_status()
+            data = response.json()
             
-            author = item.get("author", "[deleted]")
-            if author.startswith("/u/"):
-                author = author[3:]
-                
-            html_content = item.get("description", "") or item.get("content", "")
+            posts = []
             
-            extractor = HTMLTextExtractor()
-            extractor.feed(html_content)
-            selftext = extractor.get_text().strip()
+            if name == "feed2json":
+                items = data.get("items", [])
+                for item in items:
+                    post_id_val = item.get("guid", "")
+                    if post_id_val.startswith("t3_"):
+                        post_id_val = post_id_val[3:]
+                        
+                    title = item.get("title", "")
+                    permalink = item.get("url", "")
+                    
+                    author_data = item.get("author", {})
+                    author = author_data.get("name", "[deleted]") if isinstance(author_data, dict) else str(author_data)
+                    if author.startswith("/u/"):
+                        author = author[3:]
+                        
+                    html_content = item.get("content_html", "")
+                    
+                    extractor = HTMLTextExtractor()
+                    extractor.feed(html_content)
+                    selftext = extractor.get_text().strip()
+                    
+                    image_url = ""
+                    valid_media_extensions = ('.mp4', '.webm', '.gif', '.png', '.jpg', '.jpeg', '.webp')
+                    
+                    for href in extractor.link_hrefs:
+                        href_lower = href.lower().split("?")[0]
+                        if ("i.redd.it" in href_lower or "i.imgur.com" in href_lower or "preview.redd.it" in href_lower):
+                            if any(href_lower.endswith(ext) for ext in valid_media_extensions):
+                                image_url = href.split("?")[0]
+                                break
+                                
+                    if not image_url:
+                        direct_patterns = _re.findall(
+                            r'https?://(?:i\.redd\.it|i\.imgur\.com|preview\.redd\.it)/[^\s"<>?]+?(?:\.mp4|\.webm|\.gif|\.png|\.jpg|\.jpeg|\.webp)',
+                            html_content,
+                            _re.IGNORECASE
+                        )
+                        if direct_patterns:
+                            image_url = direct_patterns[0]
+                            
+                    if not image_url:
+                        continue
+                        
+                    posts.append({
+                        "id": post_id_val,
+                        "subreddit": subreddit,
+                        "title": title,
+                        "selftext": selftext,
+                        "score": config.REDDIT_MIN_SCORE + 100,
+                        "num_comments": config.REDDIT_MIN_COMMENTS + 10,
+                        "over_18": False,
+                        "is_self": False,
+                        "permalink": permalink,
+                        "author": author,
+                        "pinned": False,
+                        "crosspost_parent": None,
+                        "url": image_url,
+                        "is_rss": True
+                    })
+            elif name == "rss2json":
+                items = data.get("items", [])
+                for item in items:
+                    post_id_val = item.get("guid", "")
+                    if post_id_val.startswith("t3_"):
+                        post_id_val = post_id_val[3:]
+                        
+                    title = item.get("title", "")
+                    permalink = item.get("link", "")
+                    
+                    author = item.get("author", "[deleted]")
+                    if author.startswith("/u/"):
+                        author = author[3:]
+                        
+                    html_content = item.get("description", "") or item.get("content", "")
+                    
+                    extractor = HTMLTextExtractor()
+                    extractor.feed(html_content)
+                    selftext = extractor.get_text().strip()
+                    
+                    image_url = ""
+                    valid_media_extensions = ('.mp4', '.webm', '.gif', '.png', '.jpg', '.jpeg', '.webp')
+                    
+                    for href in extractor.link_hrefs:
+                        href_lower = href.lower().split("?")[0]
+                        if ("i.redd.it" in href_lower or "i.imgur.com" in href_lower or "preview.redd.it" in href_lower):
+                            if any(href_lower.endswith(ext) for ext in valid_media_extensions):
+                                image_url = href.split("?")[0]
+                                break
+                                
+                    if not image_url:
+                        direct_patterns = _re.findall(
+                            r'https?://(?:i\.redd\.it|i\.imgur\.com|preview\.redd\.it)/[^\s"<>?]+?(?:\.mp4|\.webm|\.gif|\.png|\.jpg|\.jpeg|\.webp)',
+                            html_content,
+                            _re.IGNORECASE
+                        )
+                        if direct_patterns:
+                            image_url = direct_patterns[0]
+                            
+                    if not image_url:
+                        continue
+                        
+                    posts.append({
+                        "id": post_id_val,
+                        "subreddit": subreddit,
+                        "title": title,
+                        "selftext": selftext,
+                        "score": config.REDDIT_MIN_SCORE + 100,
+                        "num_comments": config.REDDIT_MIN_COMMENTS + 10,
+                        "over_18": False,
+                        "is_self": False,
+                        "permalink": permalink,
+                        "author": author,
+                        "pinned": False,
+                        "crosspost_parent": None,
+                        "url": image_url,
+                        "is_rss": True
+                    })
+                    
+            if posts:
+                logger.info(f"Successfully fetched {len(posts)} fallback posts via RSS proxy ({name})")
+                return posts
+        except Exception as e:
+            logger.warning(f"RSS proxy ({name}) failed for r/{subreddit}: {e}")
             
-            # Extract video URL
-            image_url = ""
-            valid_video_extensions = ('.mp4', '.webm', '.gif')
-            
-            # 1) Check <a> href tags first
-            for href in extractor.link_hrefs:
-                href_lower = href.lower().split("?")[0]
-                if ("i.redd.it" in href_lower or "i.imgur.com" in href_lower):
-                    if any(href_lower.endswith(ext) for ext in valid_video_extensions):
-                        image_url = href.split("?")[0]
-                        break
-            
-            # 2) Fallback: regex scan
-            if not image_url:
-                direct_patterns = _re.findall(
-                    r'https?://(?:i\.redd\.it|i\.imgur\.com)/[^\s"<>?]+?(?:\.mp4|\.webm|\.gif)',
-                    html_content,
-                    _re.IGNORECASE
-                )
-                if direct_patterns:
-                    image_url = direct_patterns[0]
-            
-            if not image_url:
-                continue
-                
-            posts.append({
-                "id": post_id_val,
-                "subreddit": subreddit,
-                "title": title,
-                "selftext": selftext,
-                "score": config.REDDIT_MIN_SCORE + 100,
-                "num_comments": config.REDDIT_MIN_COMMENTS + 10,
-                "over_18": False,
-                "is_self": False,
-                "permalink": permalink,
-                "author": author,
-                "pinned": False,
-                "crosspost_parent": None,
-                "url": image_url
-            })
-        return posts
-    except Exception as e:
-        logger.warning(f"rss2json proxy fetch failed for r/{subreddit}: {e}")
-        return []
+    return []
 
 
 def _fetch_with_redlib(subreddit: str) -> List[dict]:
@@ -665,10 +622,14 @@ def filter_post(post: RedditPost, processed_ids: Set[str]) -> Optional[str]:
     parsed = urlparse(post.media_url.lower())
     is_reddit_hosted = "v.redd.it" in post.media_url.lower() or "reddit.com" in post.media_url.lower() or "/vid/" in post.media_url.lower() or "safereddit.com" in post.media_url.lower() or "redlib" in post.media_url.lower()
     
-    if config.ONLY_REDDIT_HOSTED and not is_reddit_hosted:
+    is_rss = getattr(post, "is_rss", False)
+    if not is_rss and config.ONLY_REDDIT_HOSTED and not is_reddit_hosted:
         return "Not a Reddit-hosted video"
         
     valid_extensions = ('.mp4', '.webm', '.gif')
+    if is_rss:
+        valid_extensions = ('.mp4', '.webm', '.gif', '.png', '.jpg', '.jpeg', '.webp')
+        
     if not is_reddit_hosted and not parsed.path.endswith(valid_extensions):
         return f"Media URL does not point to a valid video: {post.media_url}"
 
@@ -713,29 +674,74 @@ def download_meme_image(url: str) -> Path:
     logger.info(f"Meme image successfully saved to {out_path} ({len(response.content)} bytes)")
     return out_path
 def download_meme_video(url: str, post_id: Optional[str] = None) -> Path:
-    """Downloads the meme video from the given URL and saves it to raw directory.
+    """Downloads the meme video/image/gif from the given URL and saves it to raw directory.
 
     Download strategy (in order of preference):
-    1. Direct download via rotated Redlib proxy servers (credential-free, bypasses CI/GitHub Actions IP blocks).
-    2. yt-dlp with --impersonate chrome (fallback for local runs).
-    3. Authenticated download via Reddit OAuth Bearer token (if credentials set).
-    4. Direct HTTP download from proxy URL as a fallback.
+    1. Direct HTTP download for direct video/image/gif files (critical for RSS).
+    2. Direct download via rotated Redlib proxy servers (credential-free, bypasses CI/GitHub Actions IP blocks).
+    3. yt-dlp with --impersonate chrome (fallback for local runs).
+    4. Authenticated download via Reddit OAuth Bearer token (if credentials set).
     """
-    logger.info(f"Downloading meme video from URL: {url}")
+    logger.info(f"Downloading meme asset from URL: {url}")
+
+    # Determine file extension based on URL
+    url_lower = url.lower().split("?")[0]
+    ext = ".mp4"
+    for e in [".webm", ".gif", ".jpg", ".jpeg", ".png", ".webp"]:
+        if url_lower.endswith(e):
+            ext = e
+            break
+    if ext == ".jpeg":
+        ext = ".jpg"
 
     # Ensure RAW_DIR exists
     config.RAW_DIR.mkdir(parents=True, exist_ok=True)
-    out_path = config.RAW_DIR / "meme_video.mp4"
+    out_path = config.RAW_DIR / f"meme_video{ext}"
 
-    # Clean up any pre-existing files to prevent collisions
-    out_path.unlink(missing_ok=True)
+    # Clean up any pre-existing files of any extension to prevent collisions
     for old in config.RAW_DIR.glob("meme_video.*"):
-        old.unlink(missing_ok=True)
+        try:
+            old.unlink(missing_ok=True)
+        except Exception:
+            pass
 
     is_vredd = "v.redd.it" in url.lower()
     is_proxy = "/vid/" in url.lower() or "safereddit.com" in url.lower() or "redlib" in url.lower()
 
-    # ── STRATEGY 1: Rotated Proxy Download for Reddit Video ──
+    # ── STRATEGY 1: Direct HTTP download for direct files (images, gifs, direct mp4/webm) ──
+    is_image_or_gif = ext in (".gif", ".png", ".jpg", ".webp")
+    is_direct_video = ext in (".mp4", ".webm")
+    if (is_image_or_gif or is_direct_video) and not is_vredd and not is_proxy:
+        logger.info(f"Direct media file detected. Attempting direct HTTP download: {url}")
+        try:
+            min_size = 50_000 if is_direct_video else 1000
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+                "Accept": "*/*",
+                "Accept-Language": "en-US,en;q=0.9",
+                "Referer": "https://www.reddit.com/",
+            }
+            response = requests.get(url, headers=headers, timeout=90, stream=True)
+            response.raise_for_status()
+            total = 0
+            with open(out_path, "wb") as f:
+                for chunk in response.iter_content(chunk_size=65536):
+                    if chunk:
+                        f.write(chunk)
+                        total += len(chunk)
+            if total < min_size:
+                raise Exception(f"Downloaded direct file is too small ({total} bytes)")
+            logger.info(f"Direct media successfully downloaded to {out_path} ({total} bytes)")
+            return out_path
+        except Exception as e:
+            logger.warning(f"Direct HTTP download failed: {e}. Trying other strategies...")
+            if out_path.exists():
+                try:
+                    out_path.unlink()
+                except Exception:
+                    pass
+
+    # ── STRATEGY 2: Rotated Proxy Download for Reddit Video ──
     # If it is a Reddit video, we can download the video directly from our rotated list of working Redlib instances.
     # This bypasses the GitHub Actions IP block and doesn't require any API credentials/cookies.
     if is_proxy or is_vredd or post_id:
@@ -771,9 +777,12 @@ def download_meme_video(url: str, post_id: Optional[str] = None) -> Path:
                         return out_path
                     except Exception as e:
                         logger.warning(f"Proxy download failed for {proxy_video_url}: {e}")
-                        out_path.unlink(missing_ok=True)
+                        try:
+                            out_path.unlink(missing_ok=True)
+                        except Exception:
+                            pass
 
-    # ── STRATEGY 2: yt-dlp with --impersonate chrome (fallback for local runs) ──
+    # ── STRATEGY 3: yt-dlp with --impersonate chrome (fallback for local runs) ──
     if post_id or is_vredd or is_proxy:
         reddit_url = (
             f"https://www.reddit.com/comments/{post_id}"
@@ -788,7 +797,7 @@ def download_meme_video(url: str, post_id: Optional[str] = None) -> Path:
         except Exception as e:
             logger.warning(f"yt-dlp impersonation download failed ({e}). Trying OAuth token...")
 
-    # ── STRATEGY 3: Reddit OAuth Bearer token (requires REDDIT_CLIENT_ID set) ──
+    # ── STRATEGY 4: Reddit OAuth Bearer token (requires REDDIT_CLIENT_ID set) ──
     if is_vredd:
         bearer = _get_reddit_bearer_token()
         if bearer:
@@ -806,7 +815,7 @@ def download_meme_video(url: str, post_id: Optional[str] = None) -> Path:
             except Exception as e:
                 logger.warning(f"Authenticated download failed ({e}). Trying proxy fallback...")
 
-    # ── STRATEGY 4: External (non-Reddit) URLs — plain yt-dlp ───────────────
+    # ── STRATEGY 5: External (non-Reddit) URLs — plain yt-dlp ───────────────
     logger.info(f"External video URL detected. Downloading via yt-dlp: {url}")
     _ytdlp_generic_download(url, out_path)
     logger.info(f"Meme video successfully downloaded via yt-dlp to {out_path}")
@@ -911,9 +920,8 @@ def _ytdlp_generic_download(url: str, out_path: Path, timeout: int = 120) -> Non
 
 def get_random_reddit_post(exclude_ids: Optional[Set[str]] = None) -> Optional[RedditPost]:
     """
-    Fetch posts across configurable subreddits, apply filters,
-    and pick an eligible post using weighted random selection
-    to prioritize preferred subreddits while enforcing diversity.
+    Fetch posts across configurable subreddits or RSS feeds using a prioritized provider chain,
+    apply filters, and pick an eligible post using weighted random selection.
     """
     subreddits = config.SUBREDDITS
     if not subreddits:
@@ -923,49 +931,51 @@ def get_random_reddit_post(exclude_ids: Optional[Set[str]] = None) -> Optional[R
     processed_ids = load_processed_ids()
     if exclude_ids:
         processed_ids = set(processed_ids).union(exclude_ids)
+
+    # 1. Instantiate the active provider list based on config priority
+    from src.reddit.providers import RedditPrawProvider, RedditRSSProvider, RedditAnonymousProvider
     
-    # Combine subreddits using "+" to fetch all listings in a single HTTP request.
-    # This prevents triggering 429 Too Many Requests rate-limiting on cloud runners like GitHub Actions.
-    combined_subs = "+".join(subreddits)
-    logger.info(f"Searching subreddits for posts: r/{combined_subs}")
-    posts = fetch_posts(combined_subs, config.REDDIT_SORT, config.REDDIT_TIME_FILTER)
-    
-    # Filter out ineligible posts first
+    providers = []
+    if config.REDDIT_CLIENT_ID and config.REDDIT_CLIENT_SECRET:
+        providers.append(RedditPrawProvider())
+        
+    if getattr(config, "RSS_ENABLED", False):
+        providers.append(RedditRSSProvider())
+        
+    providers.append(RedditAnonymousProvider())
+
+    # 2. Iterate through providers in sequence. First one to yield fresh valid posts wins.
     valid_posts = []
-    if posts:
-        for post in posts:
-            filter_reason = filter_post(post, processed_ids)
-            if filter_reason is None:
-                valid_posts.append(post)
-            else:
-                logger.debug(f"Filtered out r/{post.subreddit} post {post.id}: {filter_reason}")
+    selected_provider_name = ""
+
+    for provider in providers:
+        logger.info(f"Attempting ingestion via provider: {provider.name()}")
+        try:
+            posts = provider.fetch_posts(subreddits)
+            if not posts:
+                logger.info(f"Provider {provider.name()} returned 0 posts.")
+                continue
                 
-    # Fallback to individual fetching if no valid posts were found from the combined feed
-    if not valid_posts:
-        logger.warning("Combined feed failed/empty or contained no fresh valid posts. Falling back to individual subreddit fetching.")
-        shuffled_subs = list(subreddits)
-        random.shuffle(shuffled_subs)
-        for sub in shuffled_subs:
-            logger.info(f"Attempting fallback fetch for individual subreddit: r/{sub}")
-            sub_posts = fetch_posts(sub, config.REDDIT_SORT, config.REDDIT_TIME_FILTER)
-            if sub_posts:
-                sub_valid_count = 0
-                for post in sub_posts:
-                    filter_reason = filter_post(post, processed_ids)
-                    if filter_reason is None:
-                        valid_posts.append(post)
-                        sub_valid_count += 1
-                    else:
-                        logger.debug(f"Filtered out r/{post.subreddit} post {post.id}: {filter_reason}")
-                if sub_valid_count > 0:
-                    logger.info(f"Found {sub_valid_count} valid posts in r/{sub}")
-                if len(valid_posts) >= 5:
-                    break
-            # Pause briefly to respect Reddit rate limits
-            time.sleep(1.5)
+            provider_valid_posts = []
+            for post in posts:
+                filter_reason = filter_post(post, processed_ids)
+                if filter_reason is None:
+                    provider_valid_posts.append(post)
+                else:
+                    logger.debug(f"Filtered out r/{post.subreddit} post {post.id} ({provider.name()}): {filter_reason}")
+                    
+            if provider_valid_posts:
+                logger.info(f"🎉 Provider {provider.name()} succeeded with {len(provider_valid_posts)} valid posts.")
+                valid_posts = provider_valid_posts
+                selected_provider_name = provider.name()
+                break
+            else:
+                logger.warning(f"Provider {provider.name()} had no fresh valid posts (all filtered/processed). Trying next provider...")
+        except Exception as e:
+            logger.error(f"Error executing provider {provider.name()}: {e}. Trying next provider...")
 
     if not valid_posts:
-        logger.error("❌ No eligible Reddit posts found matching all filters across all subreddits.")
+        logger.error("❌ No eligible posts found matching all filters across all subreddits and providers.")
         return None
 
     # Load subreddit history to implement a soft diversity penalty
@@ -992,7 +1002,7 @@ def get_random_reddit_post(exclude_ids: Optional[Set[str]] = None) -> Optional[R
     selected_post = random.choices(valid_posts, weights=weights, k=1)[0]
     weight_val = config.SUBREDDIT_WEIGHTS.get(selected_post.subreddit, 1.0)
     logger.info(
-        f"🎉 Weighted Selected Reddit Post: r/{selected_post.subreddit} (base weight: {weight_val}) - "
+        f"🎉 Weighted Selected Post via {selected_provider_name}: r/{selected_post.subreddit} (base weight: {weight_val}) - "
         f"ID: {selected_post.id} - Title: {selected_post.title[:50]}..."
     )
     return selected_post

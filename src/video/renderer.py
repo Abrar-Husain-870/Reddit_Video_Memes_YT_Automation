@@ -660,7 +660,11 @@ def render_curator_short(
     logger.info(f"Rendering Curator Short: duration={render_duration:.2f}s | aspect_ratio={meme_ar:.2f}")
     
     # 2. Build inputs
-    inputs = ["-i", str(meme_video_path)]
+    is_image = meme_video_path.suffix.lower() in ('.png', '.jpg', '.jpeg', '.webp', '.bmp', '.tiff')
+    if is_image:
+        inputs = ["-loop", "1", "-i", str(meme_video_path)]
+    else:
+        inputs = ["-i", str(meme_video_path)]
     
     # 3. Build filter chains
     filter_chains = []

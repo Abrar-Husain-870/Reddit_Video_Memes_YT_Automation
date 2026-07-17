@@ -96,6 +96,14 @@ REDDIT_CLIENT_ID = _env("REDDIT_CLIENT_ID", "")
 REDDIT_CLIENT_SECRET = _env("REDDIT_CLIENT_SECRET", "")
 REDDIT_USER_AGENT = _env("REDDIT_USER_AGENT", "RedditShortsBot/1.0")
 
+# RSS Ingestion Settings (RSS.app)
+RSS_ENABLED = _env_bool("RSS_ENABLED", False)
+RSS_FEEDS = [
+    f.strip()
+    for f in _env("RSS_FEEDS", "").replace("\n", ",").split(",")
+    if f.strip()
+]
+
 # ── AI Narration Settings ────────────────────────────────────
 NARRATION_MODE = _env("NARRATION_MODE", "commentary")  # natural, commentary
 LLM_PROVIDER = _env("LLM_PROVIDER", "")
