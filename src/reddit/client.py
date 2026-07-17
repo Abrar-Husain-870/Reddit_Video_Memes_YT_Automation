@@ -656,14 +656,11 @@ def download_meme_video(url: str, post_id: Optional[str] = None) -> Path:
     """Downloads the meme video from the given URL and saves it to raw directory.
 
     Download strategy (in order of preference):
-    1. v.redd.it URL + Reddit OAuth Bearer token → authenticated direct HTTP download.
-       This is the most reliable method and requires REDDIT_CLIENT_ID/SECRET in .env.
-    2. Redlib/safereddit proxy CMAF URL → unauthenticated direct HTTP download.
-    3. yt-dlp as a last-resort fallback (non-Reddit external URLs).
-
-    We deliberately NEVER reconstruct a www.reddit.com/comments/ URL because
-    Reddit's API now requires account authentication that yt-dlp cannot provide
-    in headless CI environments without a browser.
+    1. yt-dlp with --impersonate chrome via the official reddit.com/comments URL.
+       Uses curl-cffi TLS fingerprinting to bypass Reddit's bot detection — the
+       official yt-dlp solution. No API keys or cookies needed.
+    2. Authenticated download via Reddit OAuth Bearer token (if credentials set).
+    3. Direct HTTP download from Redlib proxy URL as last resort.
     """
     logger.info(f"Downloading meme video from URL: {url}")
 
@@ -679,55 +676,99 @@ def download_meme_video(url: str, post_id: Optional[str] = None) -> Path:
     is_vredd = "v.redd.it" in url.lower()
     is_proxy = "safereddit.com" in url.lower() or "redlib." in url.lower()
 
-    # ── STRATEGY 1: v.redd.it + OAuth Bearer token ────────────────────────────
-    # When PRAW credentials are configured, get the OAuth token and use it to
-    # authenticate the v.redd.it CDN request. This bypasses all bot-protection.
+    # ── STRATEGY 1: yt-dlp with --impersonate chrome (no credentials needed) ──
+    # curl-cffi spoofs the TLS fingerprint so Reddit can't tell it's a bot.
+    # We always prefer the canonical reddit.com/comments URL for best quality.
+    # If post_id is available, use it; otherwise try the URL as-is.
+    if post_id or is_vredd or is_proxy:
+        reddit_url = (
+            f"https://www.reddit.com/comments/{post_id}"
+            if post_id
+            else url  # v.redd.it or proxy URL passed directly
+        )
+        logger.info(f"Reddit-hosted video detected. Downloading via yt-dlp --impersonate: {reddit_url}")
+        try:
+            _ytdlp_impersonate_download(reddit_url, out_path)
+            logger.info(f"Meme video successfully downloaded (impersonation) to {out_path}")
+            return out_path
+        except Exception as e:
+            logger.warning(f"yt-dlp impersonation download failed ({e}). Trying OAuth token...")
+
+    # ── STRATEGY 2: Reddit OAuth Bearer token (requires REDDIT_CLIENT_ID set) ──
     if is_vredd:
         bearer = _get_reddit_bearer_token()
         if bearer:
-            logger.info(f"v.redd.it URL + OAuth Bearer token — authenticated download: {url}")
+            logger.info(f"Trying authenticated v.redd.it download: {url}")
             try:
-                extra_headers = {
-                    "Authorization": f"Bearer {bearer}",
-                    "User-Agent": config.REDDIT_USER_AGENT,
-                }
-                _direct_http_download(url, out_path, extra_headers=extra_headers)
+                _direct_http_download(
+                    url, out_path,
+                    extra_headers={
+                        "Authorization": f"Bearer {bearer}",
+                        "User-Agent": config.REDDIT_USER_AGENT,
+                    }
+                )
                 logger.info(f"Meme video successfully downloaded (authenticated) to {out_path}")
                 return out_path
             except Exception as e:
-                logger.warning(f"Authenticated v.redd.it download failed ({e}). Trying unauthenticated...")
-        # Unauthenticated fallback (may 403, but worth trying)
-        try:
-            _direct_http_download(url, out_path)
-            logger.info(f"Meme video downloaded (unauthenticated) to {out_path}")
-            return out_path
-        except Exception as e:
-            raise Exception(f"v.redd.it download failed (no credentials configured): {e}") from e
+                logger.warning(f"Authenticated download failed ({e}). Trying proxy fallback...")
 
-    # ── STRATEGY 2: Redlib/safereddit proxy URL ───────────────────────────────
-    # Safereddit's /vid/ URLs serve the video via their own CDN after a
-    # browser-verification challenge. We try a direct HTTP download; if the
-    # server returns HTML (bot-protection), we fall through to yt-dlp.
+    # ── STRATEGY 3: Direct HTTP from proxy URL ───────────────────────────────
     if is_proxy:
-        logger.info(f"Proxy video URL detected. Attempting direct HTTP download: {url}")
+        logger.info(f"Trying direct HTTP download from proxy: {url}")
         try:
             _direct_http_download(url, out_path)
-            logger.info(f"Meme video successfully downloaded via direct HTTP to {out_path}")
+            logger.info(f"Meme video downloaded via direct HTTP to {out_path}")
             return out_path
         except Exception as e:
-            logger.warning(f"Direct HTTP download failed ({e}). Trying yt-dlp with proxy URL...")
-        try:
-            _ytdlp_generic_download(url, out_path)
-            logger.info(f"Meme video successfully downloaded via yt-dlp (generic) to {out_path}")
-            return out_path
-        except Exception as e:
-            raise Exception(f"All download strategies failed for proxy URL: {url}") from e
+            raise Exception(f"All download strategies failed for Reddit video (post_id={post_id}): {e}") from e
 
-    # ── STRATEGY 3: External (non-Reddit/proxy) video URLs ───────────────────
+    if is_vredd:
+        raise Exception(
+            f"v.redd.it download failed. Install curl-cffi (`pip install curl-cffi`) "
+            f"or set REDDIT_CLIENT_ID/SECRET in .env to enable authenticated downloads."
+        )
+
+    # ── STRATEGY 4: External (non-Reddit) URLs — plain yt-dlp ───────────────
     logger.info(f"External video URL detected. Downloading via yt-dlp: {url}")
     _ytdlp_generic_download(url, out_path)
     logger.info(f"Meme video successfully downloaded via yt-dlp to {out_path}")
     return out_path
+
+
+def _ytdlp_impersonate_download(url: str, out_path: Path, timeout: int = 120) -> None:
+    """Download a Reddit video via yt-dlp using TLS browser impersonation.
+
+    Requires the curl-cffi package (listed in requirements.txt).
+    yt-dlp automatically uses it when --impersonate is passed, which makes the
+    TLS handshake indistinguishable from a real Chrome browser — bypassing
+    Reddit's bot detection without any API keys or cookies.
+
+    Reddit serves video and audio as separate DASH streams; --merge-output-format
+    ensures ffmpeg muxes them into a single MP4 file.
+    """
+    import subprocess
+    cmd = [
+        "yt-dlp",
+        "--impersonate", "chrome",       # curl-cffi TLS fingerprint spoofing
+        "--format", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/fallback",
+        "--merge-output-format", "mp4",  # mux DASH video+audio into one MP4
+        "--output", str(out_path),
+        "--no-playlist",
+        "--quiet",
+        "--no-warnings",
+        url,
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    if result.returncode != 0:
+        raise Exception(f"yt-dlp --impersonate failed: {result.stderr.strip()}")
+
+    if not out_path.exists():
+        candidates = list(out_path.parent.glob("meme_video.*"))
+        if candidates:
+            candidates[0].rename(out_path)
+        else:
+            raise FileNotFoundError("yt-dlp did not produce the expected output file.")
+
 
 
 def _direct_http_download(
@@ -766,7 +807,7 @@ def _direct_http_download(
 
 
 def _ytdlp_generic_download(url: str, out_path: Path, timeout: int = 120) -> None:
-    """Download a video URL via yt-dlp without invoking the Reddit extractor."""
+    """Download an external (non-Reddit) video URL via yt-dlp."""
     import subprocess
     cmd = [
         "yt-dlp",
@@ -788,8 +829,6 @@ def _ytdlp_generic_download(url: str, out_path: Path, timeout: int = 120) -> Non
             candidates[0].rename(out_path)
         else:
             raise FileNotFoundError("yt-dlp did not produce the expected output file.")
-
-
 
 
 def get_random_reddit_post(exclude_ids: Optional[Set[str]] = None) -> Optional[RedditPost]:

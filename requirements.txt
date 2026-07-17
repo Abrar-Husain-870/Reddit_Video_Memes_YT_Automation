@@ -20,6 +20,7 @@ Pillow>=10.0.0
 
 # Downloading clips
 yt-dlp>=2024.0.0
+curl-cffi>=0.7.0     # yt-dlp browser impersonation for Reddit (bypasses 403 without API keys)
 
 # YouTube upload
 google-auth-oauthlib>=1.0.0
