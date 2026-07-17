@@ -640,6 +640,13 @@ def filter_post(post: RedditPost, processed_ids: Set[str]) -> Optional[str]:
         
     from urllib.parse import urlparse
     parsed = urlparse(post.media_url.lower())
+    
+    only_videos = getattr(config, "ONLY_VIDEOS", True)
+    if only_videos:
+        is_image = parsed.path.endswith(('.png', '.jpg', '.jpeg', '.webp', '.bmp', '.tiff')) or "i.redd.it" in post.media_url.lower() or "preview.redd.it" in post.media_url.lower()
+        if is_image:
+            return "Image post (ONLY_VIDEOS is enabled)"
+            
     is_reddit_hosted = "v.redd.it" in post.media_url.lower() or "reddit.com" in post.media_url.lower() or "/vid/" in post.media_url.lower() or "safereddit.com" in post.media_url.lower() or "redlib" in post.media_url.lower()
     
     is_rss = getattr(post, "is_rss", False)

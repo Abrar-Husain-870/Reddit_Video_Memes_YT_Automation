@@ -90,6 +90,7 @@ REDDIT_FILTER_PINNED = _env_bool("REDDIT_FILTER_PINNED", True)
 REDDIT_FILTER_CROSSPOSTS = _env_bool("REDDIT_FILTER_CROSSPOSTS", True)
 REDDIT_POST_MIN_LEN = int(_env("REDDIT_POST_MIN_LEN", "50"))
 REDDIT_POST_MAX_LEN = int(_env("REDDIT_POST_MAX_LEN", "1500"))
+ONLY_VIDEOS = _env_bool("ONLY_VIDEOS", True)
 
 # Optional PRAW Reddit Credentials (if empty, uses anonymous JSON feeds)
 REDDIT_CLIENT_ID = _env("REDDIT_CLIENT_ID", "")

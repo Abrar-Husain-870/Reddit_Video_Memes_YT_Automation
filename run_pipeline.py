@@ -161,6 +161,9 @@ def main() -> None:
                 meme_video_path = download_meme_video(post.media_url, post.id)
                 is_image = meme_video_path.suffix.lower() in ('.png', '.jpg', '.jpeg', '.webp', '.bmp', '.tiff')
                 if is_image:
+                    if getattr(config, "ONLY_VIDEOS", True):
+                        logger.warning(f"Post {post.id} rejected: Post is an image, but ONLY_VIDEOS is enabled.")
+                        continue
                     meme_duration = 10.0
                 else:
                     try:
