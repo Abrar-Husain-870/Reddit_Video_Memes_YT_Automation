@@ -14,6 +14,12 @@ import threading
 import time
 from pathlib import Path
 
+# Force UTF-8 encoding on Windows standard output/error to prevent Unicode encoding crashes
+if sys.platform.startswith('win'):
+    import io
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+
 import config
 from src.logger import (
     logger,
