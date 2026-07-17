@@ -102,25 +102,49 @@ class ContentSafetyAnalyzer:
         return "Safe", [], ""
 
     def _call_llm(self, system_prompt: str, user_prompt: str, image_path: Optional[Path] = None) -> str:
-        """Call the configured LLM provider for content safety classification."""
+        """Call the configured LLM provider for content safety classification with retry for rate limits."""
         orig_provider = config.LLM_PROVIDER.lower()
         orig_model_name = config.LLM_MODEL
         
         # If performing a vision check and Gemini key is configured, route to Gemini as it supports vision on the free tier
         if image_path and config.GEMINI_API_KEY:
             provider = "gemini"
-            model_name = "gemini-1.5-flash"
+            model_name = "gemini-2.0-flash"
         else:
             provider = orig_provider
             model_name = orig_model_name
         
-        try:
-            return self._call_llm_internal(provider, model_name, system_prompt, user_prompt, image_path)
-        except Exception as e:
-            if image_path:
-                logger.warning(f"Safety check with image failed ({e}). Falling back to text-only safety scan.")
-                return self._call_llm_internal(orig_provider, orig_model_name, system_prompt, user_prompt, None)
-            else:
+        max_retries = 3
+        backoff_sec = 45
+        
+        for attempt in range(max_retries):
+            try:
+                return self._call_llm_internal(provider, model_name, system_prompt, user_prompt, image_path)
+            except Exception as e:
+                err_str = str(e).lower()
+                is_rate_limit = "429" in err_str or "exhausted" in err_str or "limit" in err_str or "quota" in err_str
+                
+                if is_rate_limit and attempt < max_retries - 1:
+                    logger.warning(f"Gemini API rate limit hit. Retrying in {backoff_sec} seconds... (Attempt {attempt+1}/{max_retries})")
+                    time.sleep(backoff_sec)
+                    backoff_sec *= 2
+                    continue
+                
+                if image_path:
+                    logger.warning(f"Safety check with image failed ({e}). Falling back to text-only safety scan.")
+                    backoff_sec_fb = 45
+                    for fallback_attempt in range(max_retries):
+                        try:
+                            return self._call_llm_internal(orig_provider, orig_model_name, system_prompt, user_prompt, None)
+                        except Exception as fe:
+                            fe_str = str(fe).lower()
+                            fe_rate_limit = "429" in fe_str or "exhausted" in fe_str or "limit" in fe_str or "quota" in fe_str
+                            if fe_rate_limit and fallback_attempt < max_retries - 1:
+                                logger.warning(f"Fallback API rate limit hit. Retrying in {backoff_sec_fb} seconds... (Attempt {fallback_attempt+1}/{max_retries})")
+                                time.sleep(backoff_sec_fb)
+                                backoff_sec_fb *= 2
+                                continue
+                            raise fe
                 raise e
 
     def _call_llm_internal(self, provider: str, model_name: str, system_prompt: str, user_prompt: str, image_path: Optional[Path] = None) -> str:
