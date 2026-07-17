@@ -13,6 +13,7 @@ data/raw/
 data/clips/
 data/output/
 data/cache/
+data/logs/
 
 # ── Database JSON files MUST be tracked (pipeline deduplication) ─────────────
 # These are small text files committed back by the GitHub Actions bot after
@@ -26,3 +27,4 @@ Thumbs.db
 
 # ── Scratch / Temp Testing ────────────────────────────────────────────────────
 scratch/
+data_video_bot/

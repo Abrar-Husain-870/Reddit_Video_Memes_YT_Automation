@@ -20,7 +20,8 @@ class GeminiProvider(BaseLLMProvider):
         self, 
         post: RedditPost, 
         mode: str = "commentary", 
-        style: str = "chaotic"
+        style: str = "chaotic",
+        video_duration: float = None
     ) -> dict:
         try:
             import google.generativeai as genai
@@ -35,6 +36,20 @@ class GeminiProvider(BaseLLMProvider):
 
         genai.configure(api_key=self.api_key)
         system_prompt = SYSTEM_PROMPT_COMMENTARY if mode == "commentary" else SYSTEM_PROMPT_NATURAL
+        
+        if video_duration:
+            target_words = int(video_duration * 2)
+            min_w = max(5, target_words - 3)
+            max_w = target_words + 3
+            word_instruction = (
+                f"- Write a short, natural, conversational reaction/commentary as the narration. "
+                f"Your narration MUST be EXACTLY {min_w} to {max_w} words. This is a strict limit because the video playback duration is exactly {video_duration:.1f} seconds, and the speaker speed is ~2 words per second. Keep it within this word range."
+            )
+            system_prompt = system_prompt.replace(
+                "- Write a short, natural, conversational reaction/commentary as the narration (EXACTLY 10 to 15 words. This is a strict limit. It should take 3 to 5 seconds to speak).",
+                word_instruction
+            )
+            
         user_prompt = get_user_prompt(post.subreddit, post.title, post.selftext)
 
         logger.info(f"Sending request to Gemini model: {config.LLM_MODEL}")

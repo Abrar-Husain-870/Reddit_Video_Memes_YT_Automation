@@ -108,12 +108,15 @@ def generate_optimized_metadata(
     # Summary of post (1-2 sentences)
     summary = llm_summary.strip() if llm_summary else ""
     if not summary:
-        # fallback: use first sentence of narration
-        sentences = re.split(r'(?<=[.!?])\s+', narration)
-        if sentences:
-            summary = sentences[0]
-            if len(sentences) > 1 and len(summary) < 60:
-                summary += " " + sentences[1]
+        if narration:
+            # fallback: use first sentence of narration
+            sentences = re.split(r'(?<=[.!?])\s+', narration)
+            if sentences and sentences[0]:
+                summary = sentences[0]
+                if len(sentences) > 1 and len(summary) < 60:
+                    summary += " " + sentences[1]
+        if not summary:
+            summary = post.title
                 
     # Mentions
     mentions_str = ""
@@ -123,24 +126,40 @@ def generate_optimized_metadata(
         mentions_str = " ".join(mentions_list) + "\n\n"
         
     # AI Narration Disclaimer
-    disclaimer = getattr(config, "METADATA_DISCLAIMER", "Narration is an AI-generated retelling and commentary of this story.")
+    if config.CURATOR_MODE:
+        disclaimer = getattr(config, "METADATA_DISCLAIMER", "Curated funny video meme from Reddit.")
+    else:
+        disclaimer = getattr(config, "METADATA_DISCLAIMER", "Narration is an AI-generated retelling and commentary of this story.")
     
     # Call to Action (CTA)
     cta = random.choice(CTA_LIST)
     
     # Build description body
-    desc_parts = [
-        hook,
-        "",
-        summary,
-        "",
-        f"Retold from r/{post.subreddit}.",
-        f"Original Post Title: {post.title}",
-        "",
-        disclaimer,
-        "",
-        cta
-    ]
+    if config.CURATOR_MODE:
+        desc_parts = [
+            summary,
+            "",
+            f"Curated from r/{post.subreddit}.",
+            f"Original Post Title: {post.title}",
+            f"Original Creator: u/{post.author}",
+            "",
+            disclaimer,
+            "",
+            cta
+        ]
+    else:
+        desc_parts = [
+            hook,
+            "",
+            summary,
+            "",
+            f"Retold from r/{post.subreddit}.",
+            f"Original Post Title: {post.title}",
+            "",
+            disclaimer,
+            "",
+            cta
+        ]
     
     description_text = "\n".join(desc_parts).strip()
     if mentions_str:

@@ -243,31 +243,31 @@ def _fetch_with_rss(subreddit: str) -> List[dict]:
             extractor.feed(html_content)
             selftext = extractor.get_text().strip()
             
-            # Extract image URL from RSS HTML content.
-            # We ONLY want direct image URLs (i.redd.it or i.imgur.com) to guarantee high-quality memes
+            # Extract video URL from RSS HTML content.
+            # We ONLY want direct video URLs (i.redd.it or i.imgur.com) to guarantee high-quality memes
             # and avoid 403 blocks from external preview URLs.
             image_url = ""
-            valid_img_extensions = ('.jpg', '.jpeg', '.png', '.webp', '.gif')
+            valid_video_extensions = ('.mp4', '.webm', '.gif')
             
             # 1) Check <a> href tags first — these contain the real direct URLs
             for href in extractor.link_hrefs:
                 href_lower = href.lower().split("?")[0]
                 if ("i.redd.it" in href_lower or "i.imgur.com" in href_lower):
-                    if any(href_lower.endswith(ext) for ext in valid_img_extensions):
+                    if any(href_lower.endswith(ext) for ext in valid_video_extensions):
                         image_url = href.split("?")[0]
                         break
             
             # 2) Fallback: regex scan for direct links
             if not image_url:
                 direct_patterns = _re.findall(
-                    r'https?://(?:i\.redd\.it|i\.imgur\.com)/[^\s"<>?]+?(?:\.jpg|\.jpeg|\.png|\.webp|\.gif)',
+                    r'https?://(?:i\.redd\.it|i\.imgur\.com)/[^\s"<>?]+?(?:\.mp4|\.webm|\.gif)',
                     html_content,
                     _re.IGNORECASE
                 )
                 if direct_patterns:
                     image_url = direct_patterns[0]
             
-            # If we couldn't find a direct image link, skip this post (memes must be direct images)
+            # If we couldn't find a direct video link, skip this post
             if not image_url:
                 continue
                 
@@ -347,22 +347,22 @@ def _fetch_with_rss2json(subreddit: str) -> List[dict]:
             extractor.feed(html_content)
             selftext = extractor.get_text().strip()
             
-            # Extract image URL
+            # Extract video URL
             image_url = ""
-            valid_img_extensions = ('.jpg', '.jpeg', '.png', '.webp', '.gif')
+            valid_video_extensions = ('.mp4', '.webm', '.gif')
             
             # 1) Check <a> href tags first
             for href in extractor.link_hrefs:
                 href_lower = href.lower().split("?")[0]
                 if ("i.redd.it" in href_lower or "i.imgur.com" in href_lower):
-                    if any(href_lower.endswith(ext) for ext in valid_img_extensions):
+                    if any(href_lower.endswith(ext) for ext in valid_video_extensions):
                         image_url = href.split("?")[0]
                         break
             
             # 2) Fallback: regex scan
             if not image_url:
                 direct_patterns = _re.findall(
-                    r'https?://(?:i\.redd\.it|i\.imgur\.com)/[^\s"<>?]+?(?:\.jpg|\.jpeg|\.png|\.webp|\.gif)',
+                    r'https?://(?:i\.redd\.it|i\.imgur\.com)/[^\s"<>?]+?(?:\.mp4|\.webm|\.gif)',
                     html_content,
                     _re.IGNORECASE
                 )
@@ -393,10 +393,120 @@ def _fetch_with_rss2json(subreddit: str) -> List[dict]:
         return []
 
 
+def _fetch_with_redlib(subreddit: str) -> List[dict]:
+    """Fetch posts using a public Redlib proxy instance (safereddit.com) without API keys."""
+    url = f"https://safereddit.com/r/{subreddit}"
+    logger.info(f"Fetching posts from Redlib instance: {url}")
+    try:
+        headers = {"User-Agent": "RedditShortsCuratorBot/1.0.0 (by /u/husai)"}
+        response = requests.get(url, headers=headers, timeout=15)
+        response.raise_for_status()
+        response.encoding = "utf-8"
+        
+        html_content = response.text
+        # Split using a regex to only match class="post" or class="post stickied"
+        # This avoids splitting on post_media_content, post_score, post_body, etc.
+        import re
+        post_blocks = re.split(r'<div class="post(?: stickied)?"', html_content)[1:]
+        
+        posts = []
+        for block in post_blocks:
+            # Extract ID
+            id_match = re.search(r'id="([^"]+)"', block)
+            if not id_match:
+                continue
+            post_id = id_match.group(1)
+            
+            # Extract Title (ignoring flairs)
+            title = "FAILED"
+            h2_match = re.search(r'<h2 class="post_title">(.*?)</h2>', block, re.DOTALL)
+            if h2_match:
+                h2_content = h2_match.group(1)
+                # Find <a> tags that are not flairs
+                for a_match in re.finditer(r'<a\s+href="([^"]+)"[^>]*>(.*?)</a>', h2_content, re.DOTALL):
+                    tag_html = a_match.group(0)
+                    tag_text = a_match.group(2)
+                    if "class=\"post_flair\"" not in tag_html and "class='post_flair'" not in tag_html:
+                        import html
+                        title = html.unescape(re.sub(r'<[^>]*>', '', tag_text).strip())
+                        break
+            if title == "FAILED":
+                continue
+            
+            # Extract Author
+            author_match = re.search(r'<a class="post_author[^"]*" href="/u/([^"]+)">', block)
+            author = author_match.group(1) if author_match else "[deleted]"
+            
+            # Extract Score
+            score_match = re.search(r'<div class="post_score"[^>]*>\s*(.*?)\s*<span class="label">', block, re.DOTALL)
+            score = 0
+            if score_match:
+                score_str = score_match.group(1).strip().lower()
+                try:
+                    if 'k' in score_str:
+                        score = int(float(score_str.replace('k', '')) * 1000)
+                    else:
+                        score = int(score_str)
+                except ValueError:
+                    score = 1000
+                    
+            # Extract Comments Count
+            comments_match = re.search(r'class="post_comments"[^>]*>\s*(.*?)\s*comments\s*</a>', block, re.DOTALL)
+            num_comments = 0
+            if comments_match:
+                comments_str = comments_match.group(1).strip().lower()
+                try:
+                    if 'k' in comments_str:
+                        num_comments = int(float(comments_str.replace('k', '')) * 1000)
+                    else:
+                        num_comments = int(comments_str)
+                except ValueError:
+                    num_comments = 100
+            
+            # Extract Media Link (Video sources)
+            media_url = ""
+            video_match = re.search(r'<source src="(/vid/[^"]+)" type="video/mp4"', block)
+            if video_match:
+                media_url = "https://safereddit.com" + video_match.group(1)
+            else:
+                image_match = re.search(r'<a class="post_media_lightbox" href="([^"]+)"', block)
+                if image_match:
+                    media_url = image_match.group(1)
+                    if media_url.startswith("/"):
+                        media_url = "https://safereddit.com" + media_url
+                        
+            if not media_url:
+                continue
+                
+            posts.append({
+                "id": post_id,
+                "subreddit": subreddit,
+                "title": title,
+                "selftext": "",
+                "score": score,
+                "num_comments": num_comments,
+                "over_18": False,
+                "is_self": False,
+                "permalink": f"/r/{subreddit}/comments/{post_id}",
+                "author": author,
+                "pinned": False,
+                "crosspost_parent": None,
+                "url": media_url
+            })
+        logger.info(f"Successfully scraped {len(posts)} posts from Redlib.")
+        return posts
+    except Exception as e:
+        logger.warning(f"Redlib fetch failed for r/{subreddit}: {e}")
+        return []
+
+
 def fetch_posts(subreddit: str, sort: str = "top", time_filter: str = "week") -> List[RedditPost]:
     """Fetch posts from a subreddit, mapping them to RedditPost dataclasses."""
     raw_posts = _fetch_with_praw(subreddit, sort, time_filter)
     
+    if not raw_posts:
+        raw_posts = _fetch_with_redlib(subreddit)
+        
     if not raw_posts:
         raw_posts = _fetch_anonymous_json(subreddit, sort, time_filter)
         
@@ -446,19 +556,24 @@ def filter_post(post: RedditPost, processed_ids: Set[str]) -> Optional[str]:
         return "Crosspost"
         
     if post.is_self:
-        return "Self/text post (memes must be images)"
+        return "Self/text post (memes must be videos)"
 
-    # Ensure the post URL ends with a valid image extension: .jpg, .jpeg, .png, .webp, .gif.
+    # Ensure the post URL ends with a valid video extension or is Reddit-hosted.
     if not post.media_url:
         return "No media URL found"
         
     from urllib.parse import urlparse
     parsed = urlparse(post.media_url.lower())
-    valid_extensions = ('.jpg', '.jpeg', '.png', '.webp', '.gif')
-    if not parsed.path.endswith(valid_extensions):
-        return f"Media URL does not point to a valid image: {post.media_url}"
+    is_reddit_hosted = "v.redd.it" in post.media_url.lower() or "reddit.com" in post.media_url.lower() or "safereddit.com" in post.media_url.lower()
+    
+    if config.ONLY_REDDIT_HOSTED and not is_reddit_hosted:
+        return "Not a Reddit-hosted video"
+        
+    valid_extensions = ('.mp4', '.webm', '.gif')
+    if not is_reddit_hosted and not parsed.path.endswith(valid_extensions):
+        return f"Media URL does not point to a valid video: {post.media_url}"
 
-    # For image posts, we just need a title
+    # For video posts, we just need a title
     if not post.title:
         return "No title"
         
@@ -498,9 +613,93 @@ def download_meme_image(url: str) -> Path:
         
     logger.info(f"Meme image successfully saved to {out_path} ({len(response.content)} bytes)")
     return out_path
+def download_meme_video(url: str, post_id: Optional[str] = None) -> Path:
+    """Downloads the meme video from the given URL and saves it to raw directory."""
+    logger.info(f"Downloading meme video from URL: {url}")
+    
+    # Ensure RAW_DIR exists
+    config.RAW_DIR.mkdir(parents=True, exist_ok=True)
+    # Reconstruct official Reddit URL to let yt-dlp download high-quality feeds directly
+    # and bypass Cloudflare/scraping restrictions on Redlib proxies
+    is_reddit_or_proxy = ("v.redd.it" in url.lower() or "reddit.com" in url.lower() or "safereddit.com" in url.lower())
+    if post_id and is_reddit_or_proxy:
+        url = f"https://www.reddit.com/comments/{post_id}"
+        is_reddit_hosted = True
+    else:
+        is_reddit_hosted = ("v.redd.it" in url.lower() or "reddit.com" in url.lower()) and "safereddit.com" not in url.lower()
+        
+    if is_reddit_hosted:
+        import subprocess
+        out_path = config.RAW_DIR / "meme_video.mp4"
+        logger.info(f"Reddit-hosted video detected. Downloading via yt-dlp: {url}")
+        
+        # Clean up any pre-existing files to prevent collisions
+        out_path.unlink(missing_ok=True)
+        mkv_path = out_path.with_suffix(".mkv")
+        mkv_path.unlink(missing_ok=True)
+        
+        cmd = [
+            "yt-dlp",
+            "--format", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+            "--output", str(out_path),
+            "--no-playlist",
+            "--quiet",
+            url
+        ]
+        
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        if result.returncode != 0:
+            logger.error(f"yt-dlp download failed: {result.stderr}")
+            raise Exception(f"yt-dlp download failed: {result.stderr}")
+            
+        # Verify and return file path
+        if out_path.exists():
+            logger.info(f"Meme video successfully downloaded via yt-dlp to {out_path}")
+            return out_path
+        elif mkv_path.exists():
+            mkv_path.rename(out_path)
+            logger.info(f"Meme video downloaded via yt-dlp as mkv, renamed to {out_path.name}")
+            return out_path
+        else:
+            # Fallback search in RAW_DIR for any file starting with meme_video
+            downloaded = list(config.RAW_DIR.glob("meme_video.*"))
+            if downloaded:
+                downloaded[0].rename(out_path)
+                logger.info(f"Meme video found as {downloaded[0].name}, renamed to {out_path.name}")
+                return out_path
+            raise FileNotFoundError("yt-dlp did not produce the expected output file.")
+    else:
+        # Standard direct download
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+            "Accept": "*/*",
+            "Referer": "https://www.reddit.com/",
+            "Accept-Language": "en-US,en;q=0.9",
+        }
+        response = requests.get(url, headers=headers, timeout=60, stream=True)
+        response.raise_for_status()
+        
+        # Determine file extension from URL
+        from urllib.parse import urlparse
+        parsed = urlparse(url)
+        ext = Path(parsed.path).suffix.lower()
+        if ext not in ('.mp4', '.webm', '.gif'):
+            ext = '.mp4'
+            
+        out_path = config.RAW_DIR / f"meme_video{ext}"
+        with open(out_path, "wb") as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                if chunk:
+                    f.write(chunk)
+                    
+        logger.info(f"Meme video successfully saved to {out_path}")
+        return out_path
 
 
-def get_random_reddit_post() -> Optional[RedditPost]:
+
+
+
+def get_random_reddit_post(exclude_ids: Optional[Set[str]] = None) -> Optional[RedditPost]:
     """
     Fetch posts across configurable subreddits, apply filters,
     and pick an eligible post using weighted random selection
@@ -512,6 +711,8 @@ def get_random_reddit_post() -> Optional[RedditPost]:
         return None
         
     processed_ids = load_processed_ids()
+    if exclude_ids:
+        processed_ids = set(processed_ids).union(exclude_ids)
     
     # Combine subreddits using "+" to fetch all listings in a single HTTP request.
     # This prevents triggering 429 Too Many Requests rate-limiting on cloud runners like GitHub Actions.

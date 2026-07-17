@@ -124,19 +124,23 @@ def main() -> None:
         narration = ""
         caption_title = ""
         emphasis = []
-        meme_image_path = None
+        meme_video_path = None
+        meme_duration = 10.0
 
         max_attempts = 15
+        attempted_ids = set()
         for attempt in range(1, max_attempts + 1):
             logger.info(f"Attempting post safety verification (Try {attempt}/{max_attempts})...")
 
             # Step 1: Reddit Ingestion
             log_stage_start("Reddit Ingestion")
-            post = get_random_reddit_post()
+            post = get_random_reddit_post(exclude_ids=attempted_ids)
             if not post:
                 error_msg = "No suitable Reddit posts found matching criteria"
                 log_stage_error("Reddit Ingestion", error_msg, fatal=True)
                 sys.exit(1)
+
+            attempted_ids.add(post.id)
 
             log_stage_finish("Reddit Ingestion", {
                 "id": post.id,
@@ -144,19 +148,34 @@ def main() -> None:
                 "title": post.title[:40] + "..."
             })
 
-            # Step 1.5: Download Meme Image
-            from src.reddit.client import download_meme_image
+            # Step 1.5: Download Meme Video
+            from src.reddit.client import download_meme_video
+            from src.video.renderer import _get_audio_duration
             try:
-                meme_image_path = download_meme_image(post.media_url)
+                meme_video_path = download_meme_video(post.media_url, post.id)
+                try:
+                    meme_duration = _get_audio_duration(meme_video_path)
+                except Exception as ex:
+                    logger.warning(f"Could not read meme video duration: {ex}. Defaulting to 10 seconds.")
+                    meme_duration = 10.0
+                
+                # Enforce duration filters in Curator Mode
+                if config.CURATOR_MODE:
+                    if meme_duration > config.MAX_MEME_DURATION:
+                        logger.warning(f"Post {post.id} rejected: Meme duration {meme_duration:.1f}s > {config.MAX_MEME_DURATION:.1f}s")
+                        continue
+                    if meme_duration < config.MIN_MEME_DURATION:
+                        logger.warning(f"Post {post.id} rejected: Meme duration {meme_duration:.1f}s < {config.MIN_MEME_DURATION:.1f}s")
+                        continue
             except Exception as e:
-                log_stage_error("Reddit Ingestion", f"Failed to download meme image: {e}. Trying another post.")
+                log_stage_error("Reddit Ingestion", f"Failed to download meme video: {e}. Trying another post.")
                 continue
 
-            # Stage 1 Safety Check: Immediately after Reddit Ingestion and Image Download
+            # Stage 1 Safety Check: Immediately after Reddit Ingestion and Video Download
             safety_res = safety_analyzer.check_safety(
                 title=post.title,
                 body=post.selftext,
-                image_path=meme_image_path,
+                image_path=meme_video_path,
                 stage="After Ingestion"
             )
 
@@ -174,7 +193,7 @@ def main() -> None:
             # Stage 1.2: Meme Suitability & Universal Appeal check
             suitability_res = safety_analyzer.check_meme_suitability(
                 title=post.title,
-                image_path=meme_image_path
+                image_path=meme_video_path
             )
             if not suitability_res["passed"]:
                 reason_str = suitability_res["ratings"].get("reason", "Failed appeal/suitability criteria")
@@ -188,21 +207,49 @@ def main() -> None:
                 )
                 continue  # Skip and fetch another Reddit post automatically
 
+            # Stage 1.3: Female human presence check (if configured)
+            if config.REJECT_FEMALE_HUMANS:
+                if safety_analyzer.check_female_presence(meme_video_path):
+                    logger.warning(f"Post {post.id} rejected: Video contains a female human.")
+                    log_rejected_post(
+                        post_id=post.id,
+                        subreddit=post.subreddit,
+                        risk_score="Reject",
+                        category="female_human_detected",
+                        reason="Video contains a female human."
+                    )
+                    continue
+
             # Step 2: Narration Scripting
             log_stage_start("Script Generation")
             narration_mode = args.mode or config.NARRATION_MODE
             try:
-                script_data = generate_script_with_fallback(post, narration_mode, style)
-                narration = script_data["narration"]
-                caption_title = script_data["title"]
-                emphasis = script_data["emphasis"]
+                if config.CURATOR_MODE:
+                    script_data = {
+                        "narration": "",
+                        "title": "",
+                        "emphasis": [],
+                        "yt_title": post.title,
+                        "yt_hook": post.title,
+                        "yt_summary": post.title,
+                        "yt_category": "Comedy",
+                        "yt_content_tags": []
+                    }
+                    narration = ""
+                    caption_title = ""
+                    emphasis = []
+                else:
+                    script_data = generate_script_with_fallback(post, narration_mode, style, video_duration=meme_duration)
+                    narration = script_data["narration"]
+                    caption_title = script_data["title"]
+                    emphasis = script_data["emphasis"]
             except Exception as e:
                 log_stage_error("Script Generation", f"Script generation failed: {e}. Trying another post.")
                 continue
 
             log_stage_finish("Script Generation", {
                 "title": caption_title,
-                "word_count": len(narration.split()),
+                "word_count": len(narration.split()) if narration else 0,
                 "emphasis_count": len(emphasis)
             })
             logger.info(f"Generated Script Text:\n{narration}\nEmphasis: {emphasis}")
@@ -228,7 +275,7 @@ def main() -> None:
                 description=optimized_meta["description"],
                 tags=optimized_meta["tags"],
                 captions=caption_title,
-                image_path=meme_image_path,
+                image_path=meme_video_path,
                 stage="After Narration"
             )
 
@@ -252,7 +299,7 @@ def main() -> None:
                 description=optimized_meta["description"],
                 tags=optimized_meta["tags"],
                 captions=caption_title,
-                image_path=meme_image_path,
+                image_path=meme_video_path,
                 stage="Before Rendering"
             )
 
@@ -275,75 +322,98 @@ def main() -> None:
             log_stage_error("Reddit Ingestion", error_msg, fatal=True)
             sys.exit(1)
 
-        # ── Step 3: Background / Cat Clip Selection ──────────
-        log_stage_start("Background Selection")
-        bg_clip = None
-        is_cat_clip = False
-        is_greenscreen = False
-        
-        if config.ENABLE_CAT_REACTIONS:
-            bg_clip, is_greenscreen = get_cat_reaction_clip()
-            if bg_clip:
-                is_cat_clip = True
-                logger.info(f"Using cat reaction clip: {bg_clip.name} (greenscreen={is_greenscreen})")
-            else:
-                logger.warning("ENABLE_CAT_REACTIONS is True but no cat clips found. Falling back to gameplay background.")
-                
-        if not bg_clip:
-            bg_clip = get_background_clip(skip_download=args.skip_download)
+        if config.CURATOR_MODE:
+            # Curator Mode Video Rendering
+            log_stage_start("Video Rendering")
+            video_path = config.OUTPUT_DIR / "final_short.mp4"
+            from src.video.renderer import render_curator_short
+            try:
+                render_curator_short(
+                    meme_video_path=meme_video_path,
+                    output_path=video_path,
+                    title=post.title,
+                    branding_text=config.BRANDING_TEXT,
+                    add_intro_outro=config.ADD_INTRO_OUTRO
+                )
+                log_stage_finish("Video Rendering", {"output_video": str(video_path)})
+            except Exception as e:
+                log_stage_error("Video Rendering", e, fatal=True)
+                sys.exit(1)
+
+            # ── Step 7: Update Databases ─────────────────────────
+            log_stage_start("Database Update")
+            save_processed_id(post.id, post.subreddit)
+            log_stage_finish("Database Update")
+        else:
+            # ── Step 3: Background / Cat Clip Selection ──────────
+            log_stage_start("Background Selection")
+            bg_clip = None
+            is_cat_clip = False
             is_greenscreen = False
             
-        if not bg_clip or not bg_clip.exists():
-            error_msg = "Could not retrieve background / cat video clip"
-            log_stage_error("Background Selection", error_msg, fatal=True)
-            sys.exit(1)
+            if config.ENABLE_CAT_REACTIONS:
+                bg_clip, is_greenscreen = get_cat_reaction_clip()
+                if bg_clip:
+                    is_cat_clip = True
+                    logger.info(f"Using cat reaction clip: {bg_clip.name} (greenscreen={is_greenscreen})")
+                else:
+                    logger.warning("ENABLE_CAT_REACTIONS is True but no cat clips found. Falling back to gameplay background.")
+                    
+            if not bg_clip:
+                bg_clip = get_background_clip(skip_download=args.skip_download)
+                is_greenscreen = False
+                
+            if not bg_clip or not bg_clip.exists():
+                error_msg = "Could not retrieve background / cat video clip"
+                log_stage_error("Background Selection", error_msg, fatal=True)
+                sys.exit(1)
 
-        log_stage_finish("Background Selection", {"filename": bg_clip.name, "is_cat": is_cat_clip, "is_greenscreen": is_greenscreen})
+            log_stage_finish("Background Selection", {"filename": bg_clip.name, "is_cat": is_cat_clip, "is_greenscreen": is_greenscreen})
 
-        # ── Step 4: Overlay Selection ────────────────────────
-        log_stage_start("Overlay Selection")
-        overlay_path = meme_image_path
-        log_stage_finish("Overlay Selection", {"path": str(overlay_path)})
+            # ── Step 4: Overlay Selection ────────────────────────
+            log_stage_start("Overlay Selection")
+            overlay_path = meme_video_path
+            log_stage_finish("Overlay Selection", {"path": str(overlay_path)})
 
-        # ── Step 5: Voice Synthesis (TTS) ───────────────────
-        log_stage_start("Voice Synthesis")
-        audio_path = config.OUTPUT_DIR / "voiceover.mp3"
-        try:
-            audio_dur, sentence_timings = synthesize_voiceover_with_fallback(
-                narration, output_path=audio_path, voice=tts_voice
-            )
-            log_stage_finish("Voice Synthesis", {"duration_s": audio_dur, "sentences": len(sentence_timings)})
-        except Exception as e:
-            log_stage_error("Voice Synthesis", e, fatal=True)
-            sys.exit(1)
+            # ── Step 5: Voice Synthesis (TTS) ───────────────────
+            log_stage_start("Voice Synthesis")
+            audio_path = config.OUTPUT_DIR / "voiceover.mp3"
+            try:
+                audio_dur, sentence_timings = synthesize_voiceover_with_fallback(
+                    narration, output_path=audio_path, voice=tts_voice
+                )
+                log_stage_finish("Voice Synthesis", {"duration_s": audio_dur, "sentences": len(sentence_timings)})
+            except Exception as e:
+                log_stage_error("Voice Synthesis", e, fatal=True)
+                sys.exit(1)
 
-        # ── Step 6: FFmpeg Render ────────────────────────────
-        log_stage_start("Video Rendering")
-        video_path = config.OUTPUT_DIR / "final_short.mp4"
-        try:
-            render_short(
-                clip_path=bg_clip,
-                audio_path=audio_path,
-                narration=narration,
-                overlay_card_path=overlay_path,
-                output_path=video_path,
-                sentence_timings=sentence_timings,
-                style=style,
-                emphasis_words=emphasis,
-                is_cat_clip=is_cat_clip,
-                is_greenscreen=is_greenscreen
-            )
-            log_stage_finish("Video Rendering", {"output_video": str(video_path)})
-        except Exception as e:
-            log_stage_error("Video Rendering", e, fatal=True)
-            sys.exit(1)
+            # ── Step 6: FFmpeg Render ────────────────────────────
+            log_stage_start("Video Rendering")
+            video_path = config.OUTPUT_DIR / "final_short.mp4"
+            try:
+                render_short(
+                    clip_path=bg_clip,
+                    audio_path=audio_path,
+                    narration=narration,
+                    overlay_card_path=overlay_path,
+                    output_path=video_path,
+                    sentence_timings=sentence_timings,
+                    style=style,
+                    emphasis_words=emphasis,
+                    is_cat_clip=is_cat_clip,
+                    is_greenscreen=is_greenscreen
+                )
+                log_stage_finish("Video Rendering", {"output_video": str(video_path)})
+            except Exception as e:
+                log_stage_error("Video Rendering", e, fatal=True)
+                sys.exit(1)
 
-        # ── Step 7: Update Databases ─────────────────────────
-        log_stage_start("Database Update")
-        save_processed_id(post.id, post.subreddit)
-        if not is_cat_clip:
-            increment_background_usage(bg_clip.name)
-        log_stage_finish("Database Update")
+            # ── Step 7: Update Databases ─────────────────────────
+            log_stage_start("Database Update")
+            save_processed_id(post.id, post.subreddit)
+            if not is_cat_clip:
+                increment_background_usage(bg_clip.name)
+            log_stage_finish("Database Update")
 
         # ── Step 8: Upload YouTube Shorts ────────────────────
         video_id = ""
@@ -357,7 +427,7 @@ def main() -> None:
                 description=optimized_meta["description"],
                 tags=optimized_meta["tags"],
                 metadata={"category_id": optimized_meta["category_id"]},
-                image_path=meme_image_path,
+                image_path=meme_video_path,
                 stage="Before Upload"
             )
 

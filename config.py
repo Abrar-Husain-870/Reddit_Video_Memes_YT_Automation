@@ -31,11 +31,12 @@ def _env_bool(key: str, default: bool = False) -> bool:
 
 
 # ── Directories ──────────────────────────────────────────────
-RAW_DIR = ROOT / "data" / "raw"                 # Raw background videos
-CLIPS_DIR = ROOT / "data" / "clips"             # Sliced background clips
-OUTPUT_DIR = ROOT / "data" / "output"           # Rendered assets/short
-CACHE_DIR = ROOT / "data" / "cache"             # Session tokens/archives
-DB_DIR = ROOT / "data" / "database"             # Processing history, database files
+DATA_DIR_NAME = _env("DATA_DIR_NAME", "data_video_bot")
+RAW_DIR = ROOT / DATA_DIR_NAME / "raw"                 # Raw background videos
+CLIPS_DIR = ROOT / DATA_DIR_NAME / "clips"             # Sliced background clips
+OUTPUT_DIR = ROOT / DATA_DIR_NAME / "output"           # Rendered assets/short
+CACHE_DIR = ROOT / DATA_DIR_NAME / "cache"             # Session tokens/archives
+DB_DIR = ROOT / DATA_DIR_NAME / "database"             # Processing history, database files
 
 for d in [RAW_DIR, CLIPS_DIR, OUTPUT_DIR, CACHE_DIR, DB_DIR]:
     d.mkdir(parents=True, exist_ok=True)
@@ -50,7 +51,7 @@ SUBREDDITS = [
     s.strip()
     for s in _env(
         "SUBREDDITS",
-        "memes, dankmemes, me_irl, funny, wholesomememes, AdviceAnimals, blursedimages, perfectlycutscreams, AnimalsBeingDerps, cats, dogs, meme, meirl",
+        "memes, dankmemes, me_irl, funny, wholesomememes, AdviceAnimals, blursedimages, perfectlycutscreams, AnimalsBeingDerps, cats, dogs, meme, meirl, MemeVideos",
     ).split(",")
     if s.strip()
 ]
@@ -73,6 +74,7 @@ _preferred_weights = {
     "AnimalsBeingDerps": 4.0,
     "cats": 4.0,
     "dogs": 4.0,
+    "MemeVideos": 5.0,
 }
 for s, w in _preferred_weights.items():
     if s in SUBREDDIT_WEIGHTS:
@@ -96,7 +98,12 @@ REDDIT_USER_AGENT = _env("REDDIT_USER_AGENT", "RedditShortsBot/1.0")
 
 # ── AI Narration Settings ────────────────────────────────────
 NARRATION_MODE = _env("NARRATION_MODE", "commentary")  # natural, commentary
-LLM_PROVIDER = _env("LLM_PROVIDER", "groq")  # groq, deepseek, gemini, openai, openrouter, ollama
+LLM_PROVIDER = _env("LLM_PROVIDER", "")
+if not LLM_PROVIDER:
+    if os.environ.get("GEMINI_API_KEY"):
+        LLM_PROVIDER = "gemini"
+    else:
+        LLM_PROVIDER = "groq"
 LLM_MODEL = _env("LLM_MODEL", "")  # Autoresolved below if empty
 
 # Provider Keys & Custom API Base URLs
@@ -114,7 +121,7 @@ if not LLM_MODEL:
     elif LLM_PROVIDER == "deepseek":
         LLM_MODEL = "deepseek-chat"
     elif LLM_PROVIDER == "gemini":
-        LLM_MODEL = "gemini-1.5-flash"
+        LLM_MODEL = "gemini-2.0-flash"
     elif LLM_PROVIDER == "openai":
         LLM_MODEL = "gpt-4o-mini"
     elif LLM_PROVIDER == "openrouter":
@@ -162,7 +169,7 @@ BACKGROUND_PROVIDERS = [
     ).split(",")
     if p.strip()
 ]
-LOCAL_BACKGROUNDS_DIR = ROOT / _env("LOCAL_BACKGROUNDS_DIR", "data/raw")
+LOCAL_BACKGROUNDS_DIR = ROOT / _env("LOCAL_BACKGROUNDS_DIR", f"{DATA_DIR_NAME}/raw")
 YTDL_MAX_DOWNLOADS = int(_env("YTDL_MAX_DOWNLOADS", "2"))
 YTDL_FORMAT = _env(
     "YTDL_FORMAT", "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080]"
@@ -203,13 +210,13 @@ UPLOAD_SCHEDULE_TIMES = [
 # ── Instagram (Legacy compatibility / Manual instructions) ───
 IG_USERNAME = _env("IG_USERNAME", "")
 IG_PASSWORD = _env("IG_PASSWORD", "")
-
 # ── Content Safety Settings ──────────────────────────────────
 ENABLE_CONTENT_SAFETY = _env_bool("ENABLE_CONTENT_SAFETY", True)
 SAFETY_MODE = _env("SAFETY_MODE", "strict").lower().strip()  # strict, standard, lenient
 MAX_ALLOWED_RISK = _env("MAX_ALLOWED_RISK", "low").lower().strip()  # safe, low, medium, high
+REJECT_FEMALE_HUMANS = _env_bool("REJECT_FEMALE_HUMANS", True)
 
-CAT_REACTION_FOLDER = ROOT / _env("CAT_REACTION_FOLDER", "data/assets/cat_reactions")
+CAT_REACTION_FOLDER = ROOT / _env("CAT_REACTION_FOLDER", f"{DATA_DIR_NAME}/assets/cat_reactions")
 CAT_LAYOUT_HEIGHT = float(_env("CAT_LAYOUT_HEIGHT", "0.25"))
 MEME_LAYOUT_HEIGHT = float(_env("MEME_LAYOUT_HEIGHT", "0.75"))
 ENABLE_CAT_REACTIONS = _env_bool("ENABLE_CAT_REACTIONS", True)
@@ -222,7 +229,7 @@ CAT_HISTORY_FILE = CACHE_DIR / "cat_history.json"
 # The bot will never treat this file as a normal clip — it uses random segments.
 GREENSCREEN_FILE = ROOT / _env(
     "GREENSCREEN_FILE",
-    "data/assets/cat_reactions/Long green screen video.mp4"
+    f"{DATA_DIR_NAME}/assets/cat_reactions/Long green screen video.mp4"
 )
 
 # Whether to enable greenscreen segment extraction at all
@@ -244,3 +251,12 @@ GREENSCREEN_CHROMA_BLEND = float(_env("GREENSCREEN_CHROMA_BLEND", "0.08"))
 # Keyed greenscreen overlay canvas size constraint (prevents the animal reaction from looking tiny)
 GREENSCREEN_MAX_WIDTH = int(_env("GREENSCREEN_MAX_WIDTH", "800"))
 GREENSCREEN_MAX_HEIGHT = int(_env("GREENSCREEN_MAX_HEIGHT", "800"))
+
+# ── Curator Mode Settings ───────────────────────────────────────────
+CURATOR_MODE = _env_bool("CURATOR_MODE", True)
+MAX_MEME_DURATION = float(_env("MAX_MEME_DURATION", "30.0"))
+MIN_MEME_DURATION = float(_env("MIN_MEME_DURATION", "3.0"))
+ONLY_REDDIT_HOSTED = _env_bool("ONLY_REDDIT_HOSTED", True)
+REJECT_WATERMARKS = _env_bool("REJECT_WATERMARKS", True)
+BRANDING_TEXT = _env("BRANDING_TEXT", "@RedditMemes")
+ADD_INTRO_OUTRO = _env_bool("ADD_INTRO_OUTRO", True)

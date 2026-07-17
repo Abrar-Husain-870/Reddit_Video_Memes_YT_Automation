@@ -159,6 +159,22 @@ def _get_video_dimensions(path: Path) -> Tuple[int, int]:
     return w, h
 
 
+def _has_audio(path: Path) -> bool:
+    """Check if the video file contains an audio stream using ffprobe."""
+    cmd = [
+        "ffprobe", "-v", "error",
+        "-select_streams", "a",
+        "-show_entries", "stream=codec_type",
+        "-of", "csv=p=0",
+        str(path)
+    ]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=FFPROBE_TIMEOUT)
+        return "audio" in r.stdout.lower()
+    except Exception:
+        return False
+
+
 def _get_image_dimensions(path: Path) -> Tuple[int, int]:
     """Get image width and height using ffprobe."""
     cmd = [
@@ -203,15 +219,43 @@ def render_short(
     # Get audio duration to sync video cut length
     audio_dur = _get_audio_duration(audio_path)
     
+    # Detect if overlay meme is a video
+    is_meme_video = overlay_card_path and overlay_card_path.suffix.lower() in ('.mp4', '.webm', '.gif')
+    meme_dur = 0.0
+    if is_meme_video:
+        try:
+            meme_dur = _get_audio_duration(overlay_card_path)
+            logger.info(f"Meme video duration: {meme_dur:.2f} seconds")
+        except Exception as e:
+            logger.warning(f"Could not read meme video duration: {e}. Defaulting to 10 seconds.")
+            meme_dur = 10.0
+            
     # Calculate freeze duration and total render duration
     if is_cat_clip:
-        freeze_dur = 2.0 + audio_dur  # Start reaction live play exactly when voiceover ends
-        cat_dur = 4.5  # reaction motion duration is exactly 4.5 seconds
+        base_freeze_dur = 2.0 + audio_dur
+        if is_meme_video:
+            freeze_dur = max(base_freeze_dur, 2.0 + meme_dur)
+        else:
+            freeze_dur = base_freeze_dur
+            
+        cat_dur = 4.5
         render_duration = freeze_dur + cat_dur
+        
+        # Max limit for YouTube Shorts is 59 seconds
+        if render_duration > 59.0:
+            render_duration = 59.0
+            freeze_dur = render_duration - cat_dur
+            
         logger.info(f"Rendering pipeline (Cat Reaction): Static freeze for {freeze_dur:.2f}s, then motion for {cat_dur:.2f}s | Total duration: {render_duration:.2f}s | Greenscreen: {is_greenscreen}")
     else:
         freeze_dur = 0.0
-        render_duration = min(59.0, audio_dur + 2.0 + 3.0)
+        base_render_dur = audio_dur + 2.0 + 3.0
+        if is_meme_video:
+            render_duration = max(base_render_dur, 2.0 + meme_dur)
+        else:
+            render_duration = base_render_dur
+            
+        render_duration = min(59.0, render_duration)
         logger.info(f"Rendering pipeline (Standard Background): Target Short duration: {render_duration:.2f}s")
     
     # Clean narration string
@@ -229,7 +273,10 @@ def render_short(
     mw, mh = 1080, 1080   # meme defaults
     if overlay_card_path and overlay_card_path.exists():
         try:
-            mw, mh = _get_image_dimensions(overlay_card_path)
+            if is_meme_video:
+                mw, mh = _get_video_dimensions(overlay_card_path)
+            else:
+                mw, mh = _get_image_dimensions(overlay_card_path)
         except Exception as e:
             logger.warning(f"Could not read meme dimensions: {e}. Assuming square.")
 
@@ -301,10 +348,19 @@ def render_short(
     ass_content = _build_ass_subtitles(timings, style, emphasis_words, alternate_y=y_list)
     ass_path    = config.OUTPUT_DIR / "captions.ass"
     ass_path.write_text(ass_content, encoding="utf-8")
-    ass_safe_path = "data/output/captions.ass"
+    ass_safe_path = f"{config.DATA_DIR_NAME}/output/captions.ass"
 
     # ── Filter Complex ──────────────────────────────────────────────────────
     filter_chains = []
+
+    # Handle meme video padding/freezing if it is a video
+    meme_v_tag = "[2:v]"
+    if is_meme_video and overlay_card_path and overlay_card_path.exists():
+        # Use tpad to freeze the last frame of the meme video infinitely
+        filter_chains.append(
+            f"[2:v]tpad=stop=-1:stop_mode=clone[meme_padded]"
+        )
+        meme_v_tag = "[meme_padded]"
 
     if is_cat_clip and overlay_card_path and overlay_card_path.exists():
         # ── 3 inputs: [0] cat video  [1] narration audio  [2] meme image ────
@@ -346,7 +402,7 @@ def render_short(
             )
 
             # ── C. Meme zone (full content height for greenscreen overlay) ──
-            filter_chains.append("[2:v]split=2[meme_bg_src][meme_fg_src]")
+            filter_chains.append(f"{meme_v_tag}split=2[meme_bg_src][meme_fg_src]")
             filter_chains.append(
                 f"[meme_bg_src]scale={CANVAS_W}:{meme_zone_h}:"
                 f"force_original_aspect_ratio=increase,"
@@ -430,7 +486,7 @@ def render_short(
             )
 
             # Meme zone: blurred background + fitted foreground
-            filter_chains.append("[2:v]split=2[meme_bg_src][meme_fg_src]")
+            filter_chains.append(f"{meme_v_tag}split=2[meme_bg_src][meme_fg_src]")
             filter_chains.append(
                 f"[meme_bg_src]scale={CANVAS_W}:{meme_zone_h}:"
                 f"force_original_aspect_ratio=increase,"
@@ -487,7 +543,7 @@ def render_short(
             fit_w = CANVAS_W - 2 * MARGIN
             fit_h = CONTENT_H - 2 * MARGIN
             filter_chains.append(
-                f"[2:v]scale={fit_w}:{fit_h}:"
+                f"{meme_v_tag}scale={fit_w}:{fit_h}:"
                 f"force_original_aspect_ratio=decrease[meme_scaled]"
             )
             content_centre_y = CAPTION_H + CONTENT_H // 2   # 1120
@@ -518,6 +574,16 @@ def render_short(
     filter_chains.append(
         "[1:a]adelay=2000|2000[delayed_audio]"
     )
+    
+    audio_map_tag = "[delayed_audio]"
+    if is_meme_video and overlay_card_path and overlay_card_path.exists() and _has_audio(overlay_card_path):
+        filter_chains.append(
+            "[2:a]volume=0.15[meme_a]"
+        )
+        filter_chains.append(
+            "[delayed_audio][meme_a]amix=inputs=2:duration=longest:dropout_transition=0,volume=1.5[mixed_audio]"
+        )
+        audio_map_tag = "[mixed_audio]"
         
     filter_complex_str = ";".join(filter_chains)
     
@@ -529,7 +595,7 @@ def render_short(
     cmd.extend([
         "-filter_complex", filter_complex_str,
         "-map", f"[{last_v_tag}]",
-        "-map", "[delayed_audio]",
+        "-map", audio_map_tag,
         "-c:v", "libx264",
         "-r", str(config.RENDER_FPS),
         "-preset", "medium",
@@ -562,4 +628,228 @@ def render_short(
         return output_path
     else:
         raise FileNotFoundError("Rendered video file not found after FFmpeg completion")
+
+
+def render_curator_short(
+    meme_video_path: Path,
+    output_path: Path | None = None,
+    title: str = "",
+    branding_text: str = "",
+    add_intro_outro: bool = True
+) -> Path:
+    """
+    Renders a curator-style 9:16 vertical Short from a horizontal/square/portrait Reddit meme video.
+    No voiceover or reaction clips are layered. The original audio of the meme video is preserved.
+    """
+    if output_path is None:
+        output_path = config.OUTPUT_DIR / "final_short.mp4"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    temp_title_path = config.OUTPUT_DIR / "temp_title.txt"
+    
+    try:
+        meme_dur = _get_audio_duration(meme_video_path)
+    except Exception as e:
+        logger.warning(f"Could not read meme video duration: {e}. Defaulting to 10 seconds.")
+        meme_dur = 10.0
+        
+    mw, mh = _get_video_dimensions(meme_video_path)
+    meme_ar = mw / mh
+    
+    # Target duration (maximum of 59s)
+    render_duration = min(59.0, meme_dur)
+    logger.info(f"Rendering Curator Short: duration={render_duration:.2f}s | aspect_ratio={meme_ar:.2f}")
+    
+    # 2. Build inputs
+    inputs = ["-i", str(meme_video_path)]
+    
+    # 3. Build filter chains
+    filter_chains = []
+    
+    # A. Scale/Crop base canvas (1080x1920)
+    # If the video is landscape/square, use blurred background + centered foreground.
+    # If it is portrait, scale to fit.
+    # A. Scale/Crop base canvas (1080x1920)
+    # If the video is landscape/square, use blurred background + centered foreground.
+    # If it is portrait, scale to fit the full screen.
+    if meme_ar < 0.6:
+        # Portrait (vertical) meme: scale to fit and pad to exactly 1080x1920
+        filter_chains.append(
+            f"[0:v]scale=1080:1920:force_original_aspect_ratio=decrease,"
+            f"pad=1080:1920:(1080-iw)/2:(1920-ih)/2:color=black[base_v]"
+        )
+    else:
+        # Landscape/Square meme: split into blurred bg and scaled fg
+        filter_chains.append(
+            f"[0:v]split=2[bg_src][fg_src]"
+        )
+        # Background: blur and scale to 1080x1920
+        filter_chains.append(
+            f"[bg_src]scale=1080:1920:force_original_aspect_ratio=increase,"
+            f"crop=1080:1920,boxblur=30:5[bg_blurred]"
+        )
+        # Foreground: scale to width 1032 (preserving aspect ratio)
+        fg_w = 1032
+        fg_h = make_even(1032 / meme_ar)
+        filter_chains.append(
+            f"[fg_src]scale={fg_w}:{fg_h}:force_original_aspect_ratio=decrease[fg_scaled]"
+        )
+        # Overlay foreground onto blurred background
+        filter_chains.append(
+            f"[bg_blurred][fg_scaled]overlay=x=(W-w)/2:y=(H-h)/2[base_v]"
+        )
+        
+    last_v_tag = "base_v"
+        
+    # C. Add Branding Overlay
+    if branding_text:
+        # Subtle channel branding/watermark at the bottom
+        filter_chains.append(
+            f"[{last_v_tag}]drawtext=text='{branding_text}':"
+            f"fontcolor=white@0.5:fontsize=36:font='Arial':x=(w-text_w)/2:y=h-180:"
+            f"borderw=2:bordercolor=black@0.5[v_brand]"
+        )
+        last_v_tag = "v_brand"
+        
+    # D. Add Smooth Fade-In and Fade-Out Transitions
+    if add_intro_outro:
+        fade_dur = 0.5
+        out_start = render_duration - fade_dur
+        filter_chains.append(
+            f"[{last_v_tag}]fade=type=in:start_time=0:duration={fade_dur},"
+            f"fade=type=out:start_time={out_start:.2f}:duration={fade_dur}[v_faded]"
+        )
+        last_v_tag = "v_faded"
+        
+    # E. Draw Progress Bar (synced to exact render duration)
+    if config.OVERLAY_PROGRESS_BAR:
+        progress_color = "0xFF5500"  # Orange
+        bar_y = 1880
+        bar_height = 12
+        filter_chains.append(
+            f"[{last_v_tag}]drawbox=x=0:y={bar_y}:w='1080*t/{render_duration:.2f}':h={bar_height}:color={progress_color}@0.9:t=fill[v_final]"
+        )
+        last_v_tag = "v_final"
+        
+    # F. Audio Processing: Fade-in/out the original audio
+    has_audio = _has_audio(meme_video_path)
+    audio_map_args = []
+    if has_audio:
+        if add_intro_outro:
+            fade_dur = 0.5
+            out_start = render_duration - fade_dur
+            filter_chains.append(
+                f"[0:a]afade=type=in:start_time=0:duration={fade_dur},"
+                f"afade=type=out:start_time={out_start:.2f}:duration={fade_dur}[a_faded]"
+            )
+            audio_map_args = ["-map", "[a_faded]"]
+        else:
+            audio_map_args = ["-map", "0:a"]
+    
+    # 4. Build and execute complete FFmpeg command
+    filter_complex_str = ";".join(filter_chains)
+    cmd = ["ffmpeg", "-y"]
+    cmd.extend(inputs)
+    cmd.extend([
+        "-filter_complex", filter_complex_str,
+        "-map", f"[{last_v_tag}]"
+    ])
+    if has_audio:
+        cmd.extend(audio_map_args)
+        
+    cmd.extend([
+        "-c:v", "libx264",
+        "-r", str(config.RENDER_FPS),
+        "-preset", "medium",
+        "-crf", "18",
+        "-profile:v", "high",
+        "-level", "4.2"
+    ])
+    if has_audio:
+        cmd.extend([
+            "-c:a", "aac",
+            "-b:a", "256k",
+            "-ar", "48000"
+        ])
+    cmd.extend([
+        "-t", f"{render_duration:.2f}",
+        "-movflags", "+faststart",
+        str(output_path)
+    ])
+    
+    logger.info(f"Running FFmpeg Curator Render (60 FPS, preset: medium, output: {output_path.name})")
+    
+    try:
+        r = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, timeout=RENDER_TIMEOUT)
+        if r.returncode != 0:
+            logger.error(f"FFmpeg failed with exit code {r.returncode}")
+            logger.error(f"FFmpeg stderr: {r.stderr}")
+            raise RuntimeError(f"FFmpeg render failed with exit code {r.returncode}")
+    except subprocess.TimeoutExpired:
+        logger.error("FFmpeg render timed out")
+        raise TimeoutError("FFmpeg rendering timed out")
+    finally:
+        # Clean up temp title file
+        if temp_title_path.exists():
+            try:
+                temp_title_path.unlink()
+            except Exception:
+                pass
+                
+    if output_path.exists():
+        size_mb = output_path.stat().st_size / (1024 * 1024)
+        logger.info(f"✔ Curator Short rendered successfully: {output_path.name} ({size_mb:.2f}MB, 60fps)")
+        return output_path
+    else:
+        raise FileNotFoundError("Rendered video file not found after FFmpeg completion")
+
+
+def clean_title_for_ffmpeg(text: str) -> str:
+    """Cleans a title string to be safe for FFmpeg drawtext (stripping emojis, cleaning smart quotes)."""
+    # Replace curly quotes and apostrophes
+    replacements = {
+        '“': '"',
+        '”': '"',
+        '‘': "'",
+        '’': "'",
+        '–': "-",
+        '—': "-",
+    }
+    for orig, rep in replacements.items():
+        text = text.replace(orig, rep)
+        
+    # Remove emojis and other non-ASCII characters
+    # We can keep basic printable ASCII characters (32 to 126)
+    clean_chars = []
+    for char in text:
+        code = ord(char)
+        if 32 <= code <= 126:
+            clean_chars.append(char)
+        elif char == '\n':
+            clean_chars.append(char)
+            
+    # Clean up double spaces or spaces before punctuation
+    cleaned = "".join(clean_chars)
+    # Replace multiple spaces with a single space
+    cleaned = re.sub(r' +', ' ', cleaned)
+    return cleaned.strip()
+
+
+def wrap_text(text: str, max_chars_per_line: int = 30) -> str:
+    """Helper to wrap text to a max line length."""
+    words = text.split()
+    lines = []
+    current_line = []
+    current_length = 0
+    for w in words:
+        if current_length + len(w) + 1 > max_chars_per_line:
+            if current_line:
+                lines.append(" ".join(current_line))
+            current_line = [w]
+            current_length = len(w)
+        else:
+            current_line.append(w)
+            current_length += len(w) + 1
+    if current_line:
+        lines.append(" ".join(current_line))
+    return "\n".join(lines)
 

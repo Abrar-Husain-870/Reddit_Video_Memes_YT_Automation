@@ -11,7 +11,8 @@ class BaseLLMProvider(ABC):
         self, 
         post: RedditPost, 
         mode: str = "commentary", 
-        style: str = "chaotic"
+        style: str = "chaotic",
+        video_duration: float = None
     ) -> dict:
         """
         Generate narration script and metadata from a Reddit post.
@@ -20,6 +21,7 @@ class BaseLLMProvider(ABC):
             post: The RedditPost dataclass instance.
             mode: Narration mode ('natural' or 'commentary').
             style: Presentation style ('chaotic', 'meme', 'story', 'npc').
+            video_duration: Duration of the background/meme video in seconds.
             
         Returns:
             Dict containing 'narration', 'title', 'emphasis', and YouTube metadata fields.

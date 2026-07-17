@@ -29,7 +29,8 @@ def get_llm_provider() -> BaseLLMProvider:
 def generate_script_with_fallback(
     post: RedditPost, 
     mode: str = None, 
-    style: str = None
+    style: str = None,
+    video_duration: float = None
 ) -> dict:
     """
     Generate narration script and metadata from a Reddit post.
@@ -43,7 +44,7 @@ def generate_script_with_fallback(
     
     try:
         provider = get_llm_provider()
-        parsed = provider.generate_narration(post, mode, style)
+        parsed = provider.generate_narration(post, mode, style, video_duration=video_duration)
         
         # Verify result is valid
         if parsed and parsed.get("narration") and len(parsed["narration"].split()) >= 5:
@@ -58,12 +59,20 @@ def generate_script_with_fallback(
         clean_title = strip_markdown(strip_emojis(post.title))
         clean_body = strip_markdown(strip_emojis(post.selftext))
         
-        # Truncate content to fit 45-90 seconds (approx 120-150 words)
+        # Truncate content to fit the video duration (or default range: 45-90 seconds)
         words = f"{clean_title}. {clean_body}".split()
-        if len(words) > 180:
-            narration = " ".join(words[:180]) + "..."
+        
+        if video_duration:
+            target_words = max(5, int(video_duration * 2))
+            if len(words) > target_words:
+                narration = " ".join(words[:target_words]) + "..."
+            else:
+                narration = " ".join(words)
         else:
-            narration = " ".join(words)
+            if len(words) > 180:
+                narration = " ".join(words[:180]) + "..."
+            else:
+                narration = " ".join(words)
             
         title = clean_title[:55]
         emphasis = extract_emphasis_from_text(narration, limit=4)

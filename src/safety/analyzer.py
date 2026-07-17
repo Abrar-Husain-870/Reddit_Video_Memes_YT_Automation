@@ -325,170 +325,324 @@ class ContentSafetyAnalyzer:
             logger.info("Content safety checks are disabled.")
             return {"passed": True, "risk_score": "Safe", "categories_detected": [], "reason": "Content safety checks disabled."}
 
-        # Assemble text representation
-        text_parts = []
-        if title:
-            text_parts.append(f"Reddit Title: {title}")
-        if body:
-            text_parts.append(f"Reddit Body: {body}")
-        if narration:
-            text_parts.append(f"Narration: {narration}")
-        if yt_title:
-            text_parts.append(f"YouTube Title: {yt_title}")
-        if description:
-            text_parts.append(f"YouTube Description: {description}")
-        if tags:
-            text_parts.append(f"Tags: {', '.join(tags)}")
-        if hashtags:
-            text_parts.append(f"Hashtags: {', '.join(hashtags)}")
-        if captions:
-            text_parts.append(f"Captions: {captions}")
-        if metadata:
-            text_parts.append(f"Metadata: {json.dumps(metadata)}")
-
-        full_text = "\n\n".join(text_parts).strip()
-        if not full_text and not image_path:
-            return {"passed": True, "risk_score": "Safe", "categories_detected": [], "reason": "No content to check."}
-
-        logger.info(f"Running content safety analysis (Stage: {stage})...")
-
-        # ── 1. Local Regex Scanner (Fast pass) ────────────────────────────────
-        local_score, local_cats, local_reason = self.run_local_scan(full_text)
+        import subprocess
+        temp_image_path = None
         
-        # ── 2. LLM Contextual Safety Scanner ──────────────────────────────────
-        risk_score = "Safe"
-        categories_detected = []
-        reason = ""
-        llm_success = False
-
         try:
-            risk_score, categories_detected, reason = self.run_llm_scan(full_text, image_path)
-            llm_success = True
-            logger.info(f"LLM safety check succeeded. Risk: {risk_score}, Categories: {categories_detected}")
-        except Exception as e:
-            logger.error(f"Contextual LLM safety scan error: {e}")
-            if config.SAFETY_MODE == "strict":
-                # Strict mode is fail-safe, default to Reject on error
+            if image_path and image_path.exists():
+                if image_path.suffix.lower() in ('.mp4', '.webm', '.gif'):
+                    temp_image_path = image_path.parent / "temp_safety_frame.png"
+                    cmd = [
+                        "ffmpeg", "-y",
+                        "-ss", "00:00:01",
+                        "-i", str(image_path),
+                        "-vframes", "1",
+                        str(temp_image_path)
+                    ]
+                    try:
+                        subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True, timeout=10)
+                        image_path = temp_image_path
+                    except Exception as e:
+                        logger.warning(f"Frame extraction failed for video safety check: {e}. Falling back to text-only safety scan.")
+                        image_path = None
+
+            # Assemble text representation
+            text_parts = []
+            if title:
+                text_parts.append(f"Reddit Title: {title}")
+            if body:
+                text_parts.append(f"Reddit Body: {body}")
+            if narration:
+                text_parts.append(f"Narration: {narration}")
+            if yt_title:
+                text_parts.append(f"YouTube Title: {yt_title}")
+            if description:
+                text_parts.append(f"YouTube Description: {description}")
+            if tags:
+                text_parts.append(f"Tags: {', '.join(tags)}")
+            if hashtags:
+                text_parts.append(f"Hashtags: {', '.join(hashtags)}")
+            if captions:
+                text_parts.append(f"Captions: {captions}")
+            if metadata:
+                text_parts.append(f"Metadata: {json.dumps(metadata)}")
+
+            full_text = "\n\n".join(text_parts).strip()
+            if not full_text and not image_path:
+                return {"passed": True, "risk_score": "Safe", "categories_detected": [], "reason": "No content to check."}
+
+            logger.info(f"Running content safety analysis (Stage: {stage})...")
+
+            # ── 1. Local Regex Scanner (Fast pass) ────────────────────────────────
+            local_score, local_cats, local_reason = self.run_local_scan(full_text)
+            
+            # ── 2. LLM Contextual Safety Scanner ──────────────────────────────────
+            risk_score = "Safe"
+            categories_detected = []
+            reason = ""
+            llm_success = False
+
+            try:
+                risk_score, categories_detected, reason = self.run_llm_scan(full_text, image_path)
+                llm_success = True
+                logger.info(f"LLM safety check succeeded. Risk: {risk_score}, Categories: {categories_detected}")
+            except Exception as e:
+                logger.error(f"Contextual LLM safety scan error: {e}")
+                if config.SAFETY_MODE == "strict":
+                    # Strict mode is fail-safe, default to Reject on error
+                    risk_score = "Reject"
+                    categories_detected = ["llm_api_failure"]
+                    reason = f"Strict mode fail-safe: Contextual safety check API failed/timed out. Error: {str(e)}"
+                    logger.warning("Failing safe: LLM check failed in strict safety mode. Rejecting content.")
+                else:
+                    # Lenient or Standard: fallback to local regex scan results
+                    risk_score = local_score
+                    categories_detected = local_cats
+                    reason = f"LLM failed, fell back to local scan. {local_reason}"
+                    logger.info("Fell back to local safety scan because LLM check failed.")
+
+            # If LLM check succeeded, but local scan flagged a critical term, merge them for extra protection
+            if llm_success and local_score == "Reject":
+                logger.warning(f"Local scan flagged 'Reject' content, overriding LLM risk score '{risk_score}'.")
                 risk_score = "Reject"
-                categories_detected = ["llm_api_failure"]
-                reason = f"Strict mode fail-safe: Contextual safety check API failed/timed out. Error: {str(e)}"
-                logger.warning("Failing safe: LLM check failed in strict safety mode. Rejecting content.")
-            else:
-                # Lenient or Standard: fallback to local regex scan results
-                risk_score = local_score
-                categories_detected = local_cats
-                reason = f"LLM failed, fell back to local scan. {local_reason}"
-                logger.info("Fell back to local safety scan because LLM check failed.")
+                categories_detected = list(set(categories_detected + local_cats))
+                reason = f"Local regex override: {local_reason}. (LLM reported: {reason})"
 
-        # If LLM check succeeded, but local scan flagged a critical term, merge them for extra protection
-        if llm_success and local_score == "Reject":
-            logger.warning(f"Local scan flagged 'Reject' content, overriding LLM risk score '{risk_score}'.")
-            risk_score = "Reject"
-            categories_detected = list(set(categories_detected + local_cats))
-            reason = f"Local regex override: {local_reason}. (LLM reported: {reason})"
+            # ── 3. Policy Enforcement / Threshold Validation ──────────────────────
+            # Map string risk score to integer levels
+            score_val = RISK_LEVELS.get(risk_score.lower(), 4)
+            
+            # Determine maximum allowed risk
+            max_allowed_risk = config.MAX_ALLOWED_RISK.lower()
+            max_allowed_val = RISK_LEVELS.get(max_allowed_risk, 1) # default to low risk
+            
+            # Default rejection logic: High Risk and Reject are always blocked
+            # Also reject if it exceeds max allowed risk from config
+            is_rejected = (score_val >= 3) or (score_val > max_allowed_val)
+            
+            passed = not is_rejected
 
-        # ── 3. Policy Enforcement / Threshold Validation ──────────────────────
-        # Map string risk score to integer levels
-        score_val = RISK_LEVELS.get(risk_score.lower(), 4)
-        
-        # Determine maximum allowed risk
-        max_allowed_risk = config.MAX_ALLOWED_RISK.lower()
-        max_allowed_val = RISK_LEVELS.get(max_allowed_risk, 1) # default to low risk
-        
-        # Default rejection logic: High Risk and Reject are always blocked
-        # Also reject if it exceeds max allowed risk from config
-        is_rejected = (score_val >= 3) or (score_val > max_allowed_val)
-        
-        passed = not is_rejected
+            logger.info(f"Safety check results (Stage: {stage}): Passed={passed}, Risk={risk_score}, AllowedMax={config.MAX_ALLOWED_RISK}")
 
-        logger.info(f"Safety check results (Stage: {stage}): Passed={passed}, Risk={risk_score}, AllowedMax={config.MAX_ALLOWED_RISK}")
+            return {
+                "passed": passed,
+                "risk_score": risk_score,
+                "categories_detected": categories_detected,
+                "reason": reason
+            }
+        finally:
+            if temp_image_path and temp_image_path.exists():
+                try:
+                    temp_image_path.unlink()
+                except Exception:
+                    pass
 
-        return {
-            "passed": passed,
-            "risk_score": risk_score,
-            "categories_detected": categories_detected,
-            "reason": reason
-        }
-
-    def check_meme_suitability(self, title: str, image_path: Path) -> Dict[str, any]:
+    def check_meme_suitability(self, title: str, image_path: Optional[Path] = None) -> Dict[str, any]:
         """
         Evaluates a meme's suitability and appeal using LLM.
         Rates: humor, simplicity, universal_appeal, family_friendly, requires_background_knowledge.
         """
-        system_prompt = (
-            "You are an expert meme evaluation assistant.\n"
-            "Your task is to analyze the provided meme image and/or title, and evaluate its humor, simplicity, universal appeal, family friendliness, and background knowledge requirements.\n\n"
-            "Meme Selection Criteria:\n"
-            "- Humor: How funny is the meme? (1-10)\n"
-            "- Simplicity: How simple is the meme to understand? (1-10) High score (8-10) means it can be understood in 2-3 seconds. Low score (1-5) means it is complex, wordy, or confusing.\n"
-            "- Universal Appeal: How relatable is this meme to a general broad audience (teenagers to adults)? (1-10) High score (8-10) means it is about daily life, animals, food, school, or cartoons. Low score (1-5) means it is about politics, religion, programming, finance, history, philosophy, or specific local/regional context.\n"
-            "- Family Friendliness: Does the meme avoid NSFW content, politics, religion, offensive humor, drugs, violence, hate speech, or YouTube policy violations? (Pass/Fail)\n"
-            "- Requires Background Knowledge: Does the viewer need specialized knowledge (e.g. software development, advanced math, specific crypto coins, complex history, deep Reddit lore, or specific anime/niche games) to understand the joke? (Yes/No)\n\n"
-            "You must respond ONLY with a raw JSON object containing these keys. Do not include markdown codeblocks (no ```json or similar tags):\n"
-            "{\n"
-            "  \"humor\": 1-10,\n"
-            "  \"simplicity\": 1-10,\n"
-            "  \"universal_appeal\": 1-10,\n"
-            "  \"family_friendly\": \"Pass\" or \"Fail\",\n"
-            "  \"requires_background_knowledge\": \"Yes\" or \"No\",\n"
-            "  \"reason\": \"A brief 1-sentence explanation of your rating.\"\n"
-            "}"
-        )
-        
-        user_prompt = f"Meme Title: {title}"
+        import subprocess
+        temp_image_path = None
         
         try:
-            response_text = self._call_llm(system_prompt, user_prompt, image_path)
-            cleaned = response_text.strip()
-            if cleaned.startswith("```"):
-                cleaned = re.sub(r"^```[a-zA-Z0-9]*\n", "", cleaned)
-                cleaned = re.sub(r"\n```$", "", cleaned)
-                cleaned = cleaned.strip()
+            if image_path and image_path.exists():
+                if image_path.suffix.lower() in ('.mp4', '.webm', '.gif'):
+                    temp_image_path = image_path.parent / "temp_suitability_frame.png"
+                    cmd = [
+                        "ffmpeg", "-y",
+                        "-ss", "00:00:01",
+                        "-i", str(image_path),
+                        "-vframes", "1",
+                        str(temp_image_path)
+                    ]
+                    try:
+                        subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True, timeout=10)
+                        image_path = temp_image_path
+                    except Exception as e:
+                        logger.warning(f"Frame extraction failed for suitability check: {e}. Falling back to text-only suitability check.")
+                        image_path = None
+
+            system_prompt = (
+                "You are an expert meme evaluation assistant.\n"
+                "Your task is to analyze the provided meme image and/or title, and evaluate its humor, simplicity, universal appeal, family friendliness, background knowledge requirements, and presence of watermarks.\n\n"
+                "Meme Selection Criteria:\n"
+                "- Humor: How funny is the meme? (1-10)\n"
+                "- Simplicity: How simple is the meme to understand? (1-10) High score (8-10) means it can be understood in 2-3 seconds. Low score (1-5) means it is complex, wordy, or confusing.\n"
+                "- Universal Appeal: How relatable is this meme to a general broad audience (teenagers to adults)? (1-10) High score (8-10) means it is about daily life, animals, food, school, or cartoons. Low score (1-5) means it is about politics, religion, programming, finance, history, philosophy, or specific local/regional context.\n"
+                "- Family Friendliness: Does the meme avoid NSFW content, politics, religion, offensive humor, drugs, violence, hate speech, or YouTube policy violations? (Pass/Fail)\n"
+                "- Requires Background Knowledge: Does the viewer need specialized knowledge (e.g. software development, advanced math, specific crypto coins, complex history, deep Reddit lore, or specific anime/niche games) to understand the joke? (Yes/No)\n"
+                "- Has Watermark: Does the image contain any social media watermarks or logos (e.g. TikTok, Instagram, CapCut, or other video editing/sharing app logos or username overlays)? (Yes/No)\n\n"
+                "You must respond ONLY with a raw JSON object containing these keys. Do not include markdown codeblocks (no ```json or similar tags):\n"
+                "{\n"
+                "  \"humor\": 1-10,\n"
+                "  \"simplicity\": 1-10,\n"
+                "  \"universal_appeal\": 1-10,\n"
+                "  \"family_friendly\": \"Pass\" or \"Fail\",\n"
+                "  \"requires_background_knowledge\": \"Yes\" or \"No\",\n"
+                "  \"has_watermark\": \"Yes\" or \"No\",\n"
+                "  \"reason\": \"A brief 1-sentence explanation of your rating.\"\n"
+                "}"
+            )
             
-            start = cleaned.find("{")
-            end = cleaned.rfind("}")
-            if start != -1 and end != -1:
-                cleaned = cleaned[start:end+1]
+            user_prompt = f"Meme Title: {title}"
+            
+            try:
+                response_text = self._call_llm(system_prompt, user_prompt, image_path)
+                cleaned = response_text.strip()
+                if cleaned.startswith("```"):
+                    cleaned = re.sub(r"^```[a-zA-Z0-9]*\n", "", cleaned)
+                    cleaned = re.sub(r"\n```$", "", cleaned)
+                    cleaned = cleaned.strip()
                 
-            data = json.loads(cleaned)
-            
-            humor = int(data.get("humor", 0))
-            simplicity = int(data.get("simplicity", 0))
-            universal_appeal = int(data.get("universal_appeal", 0))
-            family_friendly = data.get("family_friendly", "").strip().lower()
-            requires_bk = data.get("requires_background_knowledge", "").strip().lower()
-            
-            passed = (
-                humor >= 7 and
-                simplicity >= 8 and
-                universal_appeal >= 8 and
-                family_friendly == "pass" and
-                requires_bk == "no"
-            )
-            
-            logger.info(
-                f"Meme suitability evaluation: passed={passed} | "
-                f"humor={humor}/10, simplicity={simplicity}/10, universal_appeal={universal_appeal}/10, "
-                f"family_friendly={family_friendly}, requires_bk={requires_bk}"
-            )
-            
-            return {
-                "passed": passed,
-                "ratings": data
-            }
-        except Exception as e:
-            logger.warning(f"LLM meme suitability rating failed: {e}. Defaulting to Pass to avoid blocker.")
-            return {
-                "passed": True,
-                "ratings": {
-                    "humor": 7,
-                    "simplicity": 8,
-                    "universal_appeal": 8,
-                    "family_friendly": "Pass",
-                    "requires_background_knowledge": "No",
-                    "reason": f"Meme suitability rating failed, passed by default. Error: {str(e)}"
+                start = cleaned.find("{")
+                end = cleaned.rfind("}")
+                if start != -1 and end != -1:
+                    cleaned = cleaned[start:end+1]
+                    
+                data = json.loads(cleaned)
+                
+                humor = int(data.get("humor", 0))
+                simplicity = int(data.get("simplicity", 0))
+                universal_appeal = int(data.get("universal_appeal", 0))
+                family_friendly = data.get("family_friendly", "").strip().lower()
+                requires_bk = data.get("requires_background_knowledge", "").strip().lower()
+                has_watermark = data.get("has_watermark", "").strip().lower()
+                
+                passed = (
+                    humor >= 7 and
+                    simplicity >= 8 and
+                    universal_appeal >= 8 and
+                    family_friendly == "pass" and
+                    requires_bk == "no"
+                )
+                
+                if config.REJECT_WATERMARKS and has_watermark == "yes":
+                    passed = False
+                    logger.warning("Meme rejected because a watermark was detected.")
+                
+                logger.info(
+                    f"Meme suitability evaluation: passed={passed} | "
+                    f"humor={humor}/10, simplicity={simplicity}/10, universal_appeal={universal_appeal}/10, "
+                    f"family_friendly={family_friendly}, requires_bk={requires_bk}, has_watermark={has_watermark}"
+                )
+                
+                return {
+                    "passed": passed,
+                    "ratings": data
                 }
-            }
+            except Exception as e:
+                logger.warning(f"LLM meme suitability rating failed: {e}. Defaulting to Pass to avoid blocker.")
+                return {
+                    "passed": True,
+                    "ratings": {
+                        "humor": 7,
+                        "simplicity": 8,
+                        "universal_appeal": 8,
+                        "family_friendly": "Pass",
+                        "requires_background_knowledge": "No",
+                        "reason": f"Meme suitability rating failed, passed by default. Error: {str(e)}"
+                    }
+                }
+        finally:
+            if temp_image_path and temp_image_path.exists():
+                try:
+                    temp_image_path.unlink()
+                except Exception:
+                    pass
+
+    def check_female_presence(self, image_path: Path) -> bool:
+        """
+        Extracts key frames from the video and uses a vision-capable LLM to detect
+        if there is a female human in the video.
+        Returns: True if a female human is detected, False otherwise.
+        """
+        if not image_path or not image_path.exists():
+            return False
+            
+        import subprocess
+        
+        # Calculate video duration if possible to choose representative timestamps
+        video_dur = 10.0
+        try:
+            from src.video.renderer import _get_audio_duration
+            video_dur = _get_audio_duration(image_path)
+        except Exception:
+            pass
+            
+        # We will extract up to two frames to scan: one near the start (2s or 20% mark)
+        # and one near the middle (50% mark).
+        timestamps = [min(2.0, video_dur * 0.2), video_dur * 0.5]
+        
+        for i, ts in enumerate(timestamps):
+            temp_frame_path = image_path.parent / f"temp_female_check_frame_{i}.png"
+            
+            # Format timestamp as HH:MM:SS
+            h = int(ts // 3600)
+            m = int((ts % 3600) // 60)
+            s = ts % 60
+            ts_str = f"{h:02d}:{m:02d}:{s:05.2f}"
+            
+            cmd = [
+                "ffmpeg", "-y",
+                "-ss", ts_str,
+                "-i", str(image_path),
+                "-vframes", "1",
+                str(temp_frame_path)
+            ]
+            
+            extracted = False
+            try:
+                subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True, timeout=10)
+                extracted = True
+            except Exception as e:
+                logger.warning(f"Frame extraction failed at {ts_str} for female presence check: {e}")
+                
+            if not extracted or not temp_frame_path.exists():
+                continue
+                
+            try:
+                system_prompt = (
+                    "You are an AI assistant specialized in visual content analysis.\n"
+                    "Your task is to analyze the image and determine if it contains any female human (woman, girl, female child/infant, or female adult).\n"
+                    "Respond ONLY with a JSON object in this format:\n"
+                    "{\n"
+                    "  \"contains_female_human\": true | false,\n"
+                    "  \"confidence\": 0.0 - 1.0,\n"
+                    "  \"reason\": \"Brief explanation of what was detected\"\n"
+                    "}"
+                )
+                user_prompt = "Does this image contain any female human?"
+                
+                response_text = self._call_llm(system_prompt, user_prompt, temp_frame_path)
+                cleaned = response_text.strip()
+                if cleaned.startswith("```"):
+                    cleaned = re.sub(r"^```[a-zA-Z0-9]*\n", "", cleaned)
+                    cleaned = re.sub(r"\n```$", "", cleaned)
+                    cleaned = cleaned.strip()
+                    
+                start = cleaned.find("{")
+                end = cleaned.rfind("}")
+                if start != -1 and end != -1:
+                    cleaned = cleaned[start:end+1]
+                    
+                data = json.loads(cleaned)
+                contains_female = bool(data.get("contains_female_human", False))
+                reason = data.get("reason", "No reason provided")
+                logger.info(f"Female presence check (Frame {i} at {ts_str}): contains_female={contains_female} | Reason: {reason}")
+                
+                if contains_female:
+                    return True
+            except Exception as e:
+                logger.warning(f"Failed to query LLM for female presence check at {ts_str}: {e}")
+            finally:
+                if temp_frame_path.exists():
+                    try:
+                        temp_frame_path.unlink()
+                    except Exception:
+                        pass
+                        
+        return False
 
 def log_rejected_post(post_id: str, subreddit: str, risk_score: str, category: str, reason: str) -> None:
     """Logs rejected post details to rejected_posts.json to ensure they are never retried."""
