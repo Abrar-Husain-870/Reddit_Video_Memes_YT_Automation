@@ -466,6 +466,20 @@ class ContentSafetyAnalyzer:
         Evaluates a meme's suitability and appeal using LLM.
         Rates: humor, simplicity, universal_appeal, family_friendly, requires_background_knowledge.
         """
+        if not config.ENABLE_CONTENT_SAFETY:
+            logger.info("Content safety checks disabled, bypassing meme suitability rating.")
+            return {
+                "passed": True,
+                "ratings": {
+                    "humor": 10,
+                    "simplicity": 10,
+                    "universal_appeal": 10,
+                    "family_friendly": "Pass",
+                    "requires_background_knowledge": "No",
+                    "reason": "Content safety checks disabled."
+                }
+            }
+
         import subprocess
         temp_image_path = None
         
@@ -581,6 +595,8 @@ class ContentSafetyAnalyzer:
         if there is a female human in the video.
         Returns: True if a female human is detected, False otherwise.
         """
+        if not config.ENABLE_CONTENT_SAFETY:
+            return False
         if not image_path or not image_path.exists():
             return False
             
