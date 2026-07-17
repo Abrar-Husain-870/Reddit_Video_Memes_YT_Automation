@@ -123,6 +123,14 @@ jobs:
           TTS_VOICE: ${{ secrets.TTS_VOICE }}
           NARRATION_MODE: ${{ secrets.NARRATION_MODE }}
           YOUTUBE_PRIVACY: ${{ github.event.inputs.privacy || 'public' }}
+          
+          # ── RSS Ingestion ────────────────────────────────────────────────
+          RSS_ENABLED: ${{ secrets.RSS_ENABLED || 'true' }}
+          RSS_FEEDS: ${{ secrets.RSS_FEEDS }}
+
+          # ── Safety / Scanner Controls ───────────────────────────────────
+          ENABLE_CONTENT_SAFETY: ${{ secrets.ENABLE_CONTENT_SAFETY }}
+          SAFETY_MODE: ${{ secrets.SAFETY_MODE }}
 
           # ── Metadata / Engagement Settings ──────────────────────────────
           METADATA_MENTIONS: "@Abrar_husain"
