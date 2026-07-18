@@ -136,7 +136,7 @@ jobs:
           SAFETY_MODE: ${{ secrets.SAFETY_MODE }}
 
           # ── Metadata / Engagement Settings ──────────────────────────────
-          METADATA_MENTIONS: "@Abrar_husain"
+          METADATA_MENTIONS: ""
 
         run: |
           # Build the command
