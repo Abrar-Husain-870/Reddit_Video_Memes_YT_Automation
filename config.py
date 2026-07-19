@@ -141,19 +141,13 @@ if not LLM_MODEL:
         LLM_MODEL = "llama-3.1-8b-instant"
 
 # ── Voice / TTS Settings ─────────────────────────────────────
-TTS_PROVIDER = _env("TTS_PROVIDER", "edge")  # edge, elevenlabs, openai, azure, fish, xtts
+TTS_PROVIDER = _env("TTS_PROVIDER", "edge")  # edge, elevenlabs, openai
 TTS_VOICE = _env("TTS_VOICE", "")  # Autoresolved based on provider below if empty
 
 ELEVENLABS_API_KEY = _env("ELEVENLABS_API_KEY", "")
 ELEVENLABS_VOICE_ID = _env("ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM")  # Rachel
 
 OPENAI_TTS_MODEL = _env("OPENAI_TTS_MODEL", "tts-1")
-AZURE_TTS_KEY = _env("AZURE_TTS_KEY", "")
-AZURE_TTS_REGION = _env("AZURE_TTS_REGION", "eastus")
-FISH_AUDIO_API_KEY = _env("FISH_AUDIO_API_KEY", "")
-FISH_AUDIO_VOICE_ID = _env("FISH_AUDIO_VOICE_ID", "")
-XTTS_API_URL = _env("XTTS_API_URL", "http://localhost:8020")
-XTTS_SPEAKER_WAV = _env("XTTS_SPEAKER_WAV", "")  # Path to speaker reference wave
 
 # Resolve default voice identifiers
 if not TTS_VOICE:
@@ -161,9 +155,6 @@ if not TTS_VOICE:
         TTS_VOICE = "en-US-AndrewNeural"
     elif TTS_PROVIDER == "openai":
         TTS_VOICE = "onyx"  # alloy, echo, fable, onyx, nova, shimmer
-    elif TTS_PROVIDER == "azure":
-        # Azure XML format
-        TTS_VOICE = "en-US-AndrewNeural"
     elif TTS_PROVIDER == "elevenlabs":
         TTS_VOICE = ELEVENLABS_VOICE_ID
     else:
@@ -216,9 +207,7 @@ UPLOAD_SCHEDULE_TIMES = [
     if t.strip()
 ]
 
-# ── Instagram (Legacy compatibility / Manual instructions) ───
-IG_USERNAME = _env("IG_USERNAME", "")
-IG_PASSWORD = _env("IG_PASSWORD", "")
+
 # ── Content Safety Settings ──────────────────────────────────
 ENABLE_CONTENT_SAFETY = _env_bool("ENABLE_CONTENT_SAFETY", True)
 SAFETY_MODE = _env("SAFETY_MODE", "strict").lower().strip()  # strict, standard, lenient

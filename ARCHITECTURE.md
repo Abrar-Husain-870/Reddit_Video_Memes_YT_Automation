@@ -10,18 +10,26 @@ This document details the software architecture of the Reddit-to-Shorts content 
 flowchart TD
     %% Component Layers
     subgraph Ingestion["1. Ingestion Layer"]
-        crawler["Reddit Crawler (src/reddit/client.py)"]
+        crawler["Reddit Ingestor (src/reddit/client.py)"]
         reddit_json["Anonymous JSON Feed"]
+        redlib["Redlib Proxy Instances"]
         reddit_praw["PRAW API Client"]
-        dedup_db[("Processed Posts DB (data/database/processed_posts.json)")]
+        reddit_rss["RSS Feed Ingestor"]
+        dedup_db[("Processed Posts DB (data_video_bot/database/processed_reddit_posts.json)")]
+    end
+
+    subgraph Safety["Safety Layer (src/safety/analyzer.py)"]
+        safety_analyzer["Content Safety Analyzer"]
+        appeal_check["Meme Suitability Check"]
+        female_check["Female Presence Check"]
+        rejected_db[("Rejected Posts DB (data_video_bot/database/rejected_posts.json)")]
     end
 
     subgraph LLM["2. Narration Layer"]
         llm_factory["LLM Factory (src/narration/__init__.py)"]
         groq["Groq Client"]
-        openai["OpenAI / DeepSeek / OpenRouter"]
+        openai["OpenAI / DeepSeek / OpenRouter / Ollama"]
         gemini["Gemini Client"]
-        ollama["Ollama Client"]
         fallback_script["Local Regex Cleanup (Fallback)"]
     end
 
@@ -34,7 +42,7 @@ flowchart TD
     end
 
     subgraph Video["4. Compositing Layer"]
-        bg_mgr["Background Manager (src/video/background.py)"]
+        bg_mgr["Background Selector (src/video/cat_selector.py / greenscreen.py)"]
         overlay_draw["Reddit Card Drawer (src/video/overlay.py)"]
         ffmpeg_comp["Video Renderer (src/video/renderer.py)"]
         ass_gen["Kinetic Subtitle Generator (ASS)"]
@@ -43,7 +51,7 @@ flowchart TD
     subgraph Upload["5. Distribution Layer"]
         yt_upload["YouTube Upload Manager (src/upload/youtube.py)"]
         schedule_chk["Scheduler Checker (src/upload/scheduler.py)"]
-        upload_db[("Upload History DB (data/database/upload_history.json)")]
+        upload_db[("Upload History DB (data_video_bot/database/upload_history.json)")]
     end
 
     %% Data Flow Connections
@@ -55,38 +63,44 @@ flowchart TD
     schedule_chk -->|Query limit & slot| upload_db
     schedule_chk -->|Run permitted| crawler
 
-    crawler -->|1. Fetch posts| reddit_json & reddit_praw
+    crawler -->|1. Fetch posts| reddit_json & redlib & reddit_praw & reddit_rss
     crawler -->|2. Check duplicates| dedup_db
-    crawler -->|3. Emit Post| llm_factory
+    crawler -->|3. Validate Ingestion Safety| safety_analyzer
+    
+    safety_analyzer -->|Log Rejections| rejected_db
+    safety_analyzer -->|4. Emit Valid Post| llm_factory
 
-    llm_factory -->|4. Request Script| groq & openai & gemini & ollama
+    llm_factory -->|5. Request Script| groq & openai & gemini
     llm_factory -.->|LLM Fail Fallback| fallback_script
-    llm_factory -->|5. Emit Narration & Accent Words| tts_factory
+    llm_factory -->|6. Validate Script Safety| safety_analyzer
+    llm_factory -->|7. Emit Narration & Accent Words| tts_factory
 
-    tts_factory -->|6. Generate Audio| edge & eleven & oai_tts
-    eleven & oai_tts -->|7. Estimate word timings| aligner
-    tts_factory -->|8. Emit Audio & Timing Data| ffmpeg_comp
+    tts_factory -->|8. Generate Audio| edge & eleven & oai_tts
+    eleven & oai_tts -->|9. Estimate word timings| aligner
+    tts_factory -->|10. Emit Audio & Timing Data| ffmpeg_comp
 
-    bg_mgr -->|9. Fetch clip (LFU Selection)| ffmpeg_comp
-    overlay_draw -->|10. Draw Card PNG| ffmpeg_comp
-    ffmpeg_comp -->|11. Generate ASS| ass_gen
-    ffmpeg_comp -->|12. Compositing via FFmpeg| yt_upload
+    bg_mgr -->|11. Fetch clip (Reaction selection)| ffmpeg_comp
+    overlay_draw -->|12. Draw Card PNG| ffmpeg_comp
+    ffmpeg_comp -->|13. Generate ASS| ass_gen
+    ffmpeg_comp -->|14. Compositing via FFmpeg| yt_upload
 
-    yt_upload -->|13. Upload Short (OAuth)| upload_db
+    yt_upload -->|15. Final Pre-Upload Safety| safety_analyzer
+    yt_upload -->|16. Upload Short (OAuth)| upload_db
 ```
 
 ---
 
 ## 📂 Directory Layout
 
-The application has been restructured from single-file scripts into a modular Python package:
+The application is structured as a modular Python package:
 
 ```text
-Brain_Bot/
+Reddit-Memes-Automation-for-YT-Shorts/
 │
-├── config.py                 # Pydantic-like Central Configuration Manager
+├── config.py                 # Central Configuration Manager (reads from .env)
 ├── run_pipeline.py           # Core Master Pipeline Orchestrator (CLI Entry Point)
 ├── get_refresh_token.py      # OAuth Helper tool to fetch YT Refresh Tokens
+├── test_curator_mode.py      # Integration testing script for Curator Mode rendering
 ├── requirements.txt          # Pip dependencies list
 │
 ├── src/                      # Source Code Package
@@ -94,9 +108,13 @@ Brain_Bot/
 │   ├── logger.py             # Structured Rotational Telemetry Logger
 │   │
 │   ├── reddit/               # Reddit Crawling & Verification Submodule
-│   │   ├── __init__.py
 │   │   ├── models.py         # Structured RedditPost Dataclass
-│   │   └── client.py         # Ingestion, Validation filters & Deduplication DB
+│   │   ├── providers.py      # Dual-ingestion strategy implementations (PRAW, RSS, Anonymous)
+│   │   └── client.py         # Ingestion manager, download client, and historical tracking
+│   │
+│   ├── safety/               # Content Moderation Submodule
+│   │   ├── __init__.py
+│   │   └── analyzer.py       # Local Regex rules & vision/text LLM safety gates
 │   │
 │   ├── narration/            # LLM Narration Scripting Submodule
 │   │   ├── __init__.py       # Provider Factory & Local Fallback cleanups
@@ -118,49 +136,58 @@ Brain_Bot/
 │   └── video/                # Video Compositing Submodule
 │   │   ├── __init__.py       # Exposes selection, overlay drawing, and FFmpeg renderers
 │   │   ├── background.py     # yt-dlp downloader, FFmpeg scene cutter, LFU clip picker
+│   │   ├── cat_selector.py   # Adaptive selection logic for cat reaction overlays
+│   │   ├── greenscreen.py    # Keyed overlay extractor for green screen reaction files
 │   │   ├── overlay.py        # Pill-based high-res Reddit card image generator
-│   │   └── renderer.py       # compositing filter graph (blurs, card, progress bars, subtitles)
+│   │   └── renderer.py       # Compositing filter graph (blurs, card, progress bars, subtitles)
 │   │
 │   └── upload/               # Distribution & Scheduler Submodule
 │       ├── __init__.py
+│       ├── metadata.py       # LLM metadata generator for titles, tags, categories
 │       ├── youtube.py        # Chunked resumable YouTube uploads & daily quota tracking
 │       └── scheduler.py      # State-based time window slot parser
 │
-└── data/                     # Persistent App Data Directory
-    ├── raw/                  # Temp storage for raw downloads
+└── data_video_bot/           # Persistent App Data Directory (Auto-created)
+    ├── raw/                  # Temp storage for downloaded raw meme videos
     ├── output/               # Rendered final shorts and subtitle assets
     ├── clips/                # Pre-sliced background video segments
     ├── cache/                # yt-dlp download logs & YouTube OAuth token cache
     └── database/             # App State Databases
-        ├── processed_posts.json   # Crawled posts history (prevents duplicates)
-        ├── used_backgrounds.json  # Least-Frequently-Used background counts
-        └── upload_history.json    # YouTube uploaded IDs & daily limit tracker
+        ├── processed_reddit_posts.json  # Crawled posts history (prevents duplicates)
+        ├── used_backgrounds.json        # Least-Frequently-Used background counts
+        ├── rejected_posts.json          # Blocked safety-violation posts registry
+        └── upload_history.json          # YouTube uploaded IDs & daily limit tracker
 ```
 
 ---
 
-## 🛡️ Fault Tolerance & Survivability
+## 🛡️ Content Safety Layer (4 Gates)
 
-To satisfy production requirements, the pipeline implements multi-layered error recovery:
+The system deploys a multi-phase safety guardrails analyzer (`ContentSafetyAnalyzer`) to protect the target publishing channel from policies/strikes:
 
-1. **Stateful Scheduling**: Instead of daemon loops, the scheduler (`check_scheduler_run`) matches slot windows against actual successful upload logs in `upload_history.json`. This makes it completely self-healing across power outages or CI job delays.
-2. **Reddit API Dual Ingestion**: If PRAW credentials are omitted or API quotas are hit, the client falls back to anonymous `.json` crawling.
-3. **LLM Parser Resiliency**: If LLMs return empty strings, invalid blocks, or fail due to timeouts, a local script cleaner parses the post directly using regex to output clean narration.
-4. **TTS Engine Fallback**: If ElevenLabs or OpenAI TTS is down or out of credits, synthesis falls back to Microsoft Edge TTS (free, no key required).
-5. **YouTube Upload Retries**: The OAuth uploader splits video uploads into chunks and retries chunks up to 3 times with exponential backoff on transport errors.
+1. **Stage 1 (Post Ingestion & Video Download)**: Analyzes the post content and downscaled video frames using local regexes (14 banned categories) + LLM context checks + Meme Suitability check (relatability, humor) + Watermark rejection + Female presence rejection (if configured).
+2. **Stage 2 (Post Scripting)**: Scans the LLM-generated script, title, description, and tags to ensure no unsafe terminology was introduced.
+3. **Stage 3 (Pre-Rendering)**: Re-validates all parameters before committing expensive rendering compute resources.
+4. **Stage 4 (Pre-Upload)**: Ensures the final title, description, and metadata comply with advertiser policies immediately before the YouTube API upload request.
+
+If any check fails, the post ID is logged to `rejected_posts.json`, and the orchestrator automatically fetches another post from the ingestion queue.
 
 ---
 
-## 🎨 Subtitle & Compositing Filter Graph
+## 🎨 Rendering Engine Layouts
 
-The rendering system executes a sophisticated single-pass FFmpeg command to maximize speed and quality:
+The rendering layer (`src/video/renderer.py`) supports two distinct operational modes:
 
-1. **Aspect Ratio Crop**: Scale the landscape background clip to fill vertical space while maintaining center focus:
-   `scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920`
-2. **Reddit Card Overlay**: Blends the card PNG generated by Pillow in the center:
-   `[v_base][2:v]overlay=x=(1080-w)/2:y=300[v_card]`
-3. **Word-Popping Captions**: Burns Advanced SubStation Alpha (`captions.ass`) subtitles into the video. Timing files use custom pop tags:
-   `{\c<color>\an5\fscx125\fscy125\t(0,100,\fscx100,\fscy100)}word`
-   This instantly inflates each word by 25% and shrinks it to 100% over 100ms as it is spoken.
-4. **Animated Progress Bar**: Draws a thin colored box at the bottom, dynamically mapping width to elapsed playback time:
-   `drawbox=x=0:y=1880:w='1080*t/<duration>':h=12:color=0xFF5500@0.9:t=fill`
+### 1. Curator Mode (`CURATOR_MODE=True`)
+* Preserves the original audio and video of the meme.
+* Applies a blurred replica of the meme to fit a 1080x1920 portrait canvas.
+* Places the scaled sharp meme in the center.
+* Layers customizable text watermarks, fade in/out transitions, and progress bars.
+
+### 2. Cat / Greenscreen Reaction Mode (`CURATOR_MODE=False`)
+* Synthesizes AI script narration via edge-tts, ElevenLabs, or OpenAI.
+* Layers a Minecraft/Subway Surfers gameplay clip or reaction video as a base.
+* Overlays a PIL-generated Reddit dark mode post card in the center.
+* Generates an Advanced SubStation Alpha (`captions.ass`) subtitle file with word-popping effects (`\fscx125` scaling).
+* Muxes the narration audio (delayed by 2.0 seconds) with the meme's original audio track at 15% volume.
+* If a greenscreen reaction is selected, the chromakey filter (`chromakey=color=0x00B140`) chromatically removes the background on-the-fly and overlays the reaction clip dynamically without overlap.

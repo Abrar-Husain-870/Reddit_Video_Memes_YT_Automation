@@ -843,22 +843,3 @@ def clean_title_for_ffmpeg(text: str) -> str:
     return cleaned.strip()
 
 
-def wrap_text(text: str, max_chars_per_line: int = 30) -> str:
-    """Helper to wrap text to a max line length."""
-    words = text.split()
-    lines = []
-    current_line = []
-    current_length = 0
-    for w in words:
-        if current_length + len(w) + 1 > max_chars_per_line:
-            if current_line:
-                lines.append(" ".join(current_line))
-            current_line = [w]
-            current_length = len(w)
-        else:
-            current_line.append(w)
-            current_length += len(w) + 1
-    if current_line:
-        lines.append(" ".join(current_line))
-    return "\n".join(lines)
-
